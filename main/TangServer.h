@@ -43,23 +43,23 @@ bool is_active = false;
 unsigned long activation_timestamp = 0; // Timestamp when server was activated
 
 // --- Key Storage ---
-uint8_t tang_sig_private_key[32]; // Signing key - in-memory only when active
-uint8_t tang_sig_public_key[64];  // Signing key - in-memory only when active
-uint8_t tang_exc_private_key[32]; // Exchange key - in-memory only when active
-uint8_t tang_exc_public_key[64];  // Exchange key - in-memory only when active
-uint8_t admin_private_key[32];    // Persistent in EEPROM
-uint8_t admin_public_key[64];     // Derived from private key
+uint8_t tang_sig_private_key[66]; // Signing key - in-memory only when active (P-521)
+uint8_t tang_sig_public_key[132]; // Signing key - in-memory only when active (P-521)
+uint8_t tang_exc_private_key[66]; // Exchange key - in-memory only when active (P-521)
+uint8_t tang_exc_public_key[132]; // Exchange key - in-memory only when active (P-521)
+uint8_t admin_private_key[66];    // Persistent in EEPROM (P-521)
+uint8_t admin_public_key[132];    // Derived from private key (P-521)
 
 // --- EEPROM Configuration ---
 const int EEPROM_SIZE = 4096;
 const int EEPROM_MAGIC_ADDR = 0;
-const int EEPROM_SALT_ADDR = 4; // 16 bytes for PBKDF2 salt
-const int EEPROM_ADMIN_KEY_ADDR = 20;
-const int EEPROM_TANG_SIG_KEY_ADDR = EEPROM_ADMIN_KEY_ADDR + 32;
+const int EEPROM_SALT_ADDR = 4;       // 16 bytes for PBKDF2 salt
+const int EEPROM_ADMIN_KEY_ADDR = 20; // 66 bytes for P-521 private key
+const int EEPROM_TANG_SIG_KEY_ADDR = EEPROM_ADMIN_KEY_ADDR + 66;
 const int GCM_TAG_SIZE = 16;
-const int EEPROM_TANG_SIG_TAG_ADDR = EEPROM_TANG_SIG_KEY_ADDR + 32;
+const int EEPROM_TANG_SIG_TAG_ADDR = EEPROM_TANG_SIG_KEY_ADDR + 66;
 const int EEPROM_TANG_EXC_KEY_ADDR = EEPROM_TANG_SIG_TAG_ADDR + GCM_TAG_SIZE;
-const int EEPROM_TANG_EXC_TAG_ADDR = EEPROM_TANG_EXC_KEY_ADDR + 32;
+const int EEPROM_TANG_EXC_TAG_ADDR = EEPROM_TANG_EXC_KEY_ADDR + 66;
 const int EEPROM_WIFI_SSID_ADDR = EEPROM_TANG_EXC_TAG_ADDR + GCM_TAG_SIZE;
 const int EEPROM_WIFI_PASS_ADDR = EEPROM_WIFI_SSID_ADDR + 33;
 const uint32_t EEPROM_MAGIC_VALUE = 0xCAFEDEAD;
@@ -87,7 +87,7 @@ void setup()
   {
     DEBUG_PRINTLN("Found existing configuration in EEPROM.");
     // Load Admin Key
-    for (int i = 0; i < 32; ++i)
+    for (int i = 0; i < 66; ++i)
       admin_private_key[i] = EEPROM.read(EEPROM_ADMIN_KEY_ADDR + i);
     compute_ec_public_key(admin_private_key, admin_public_key);
     DEBUG_PRINTLN("Loaded admin key.");
@@ -116,7 +116,7 @@ void setup()
 
     // 2. Generate and save admin key
     generate_ec_keypair(admin_public_key, admin_private_key);
-    for (int i = 0; i < 32; ++i)
+    for (int i = 0; i < 66; ++i)
       EEPROM.write(EEPROM_ADMIN_KEY_ADDR + i, admin_private_key[i]);
     DEBUG_PRINTLN("Generated admin keypair");
 
@@ -171,11 +171,11 @@ void setup()
     // 4. Generate initial Tang signing key and encrypt it with the password
     DEBUG_PRINTLN("Generating and encrypting signing key (this may take 20-30 seconds)...");
     generate_ec_keypair(tang_sig_public_key, tang_sig_private_key);
-    uint8_t encrypted_tang_sig_key[32];
+    uint8_t encrypted_tang_sig_key[66];
     uint8_t gcm_sig_tag[GCM_TAG_SIZE];
-    memcpy(encrypted_tang_sig_key, tang_sig_private_key, 32);
-    crypt_local_data_gcm(encrypted_tang_sig_key, 32, password_input.c_str(), salt, true, gcm_sig_tag);
-    for (int i = 0; i < 32; ++i)
+    memcpy(encrypted_tang_sig_key, tang_sig_private_key, 66);
+    crypt_local_data_gcm(encrypted_tang_sig_key, 66, password_input.c_str(), salt, true, gcm_sig_tag);
+    for (int i = 0; i < 66; ++i)
       EEPROM.write(EEPROM_TANG_SIG_KEY_ADDR + i, encrypted_tang_sig_key[i]);
     for (int i = 0; i < GCM_TAG_SIZE; ++i)
       EEPROM.write(EEPROM_TANG_SIG_TAG_ADDR + i, gcm_sig_tag[i]);
@@ -183,11 +183,11 @@ void setup()
     // 5. Generate initial Tang exchange key and encrypt it with the password
     DEBUG_PRINTLN("Generating and encrypting exchange key...");
     generate_ec_keypair(tang_exc_public_key, tang_exc_private_key);
-    uint8_t encrypted_tang_exc_key[32];
+    uint8_t encrypted_tang_exc_key[66];
     uint8_t gcm_exc_tag[GCM_TAG_SIZE];
-    memcpy(encrypted_tang_exc_key, tang_exc_private_key, 32);
-    crypt_local_data_gcm(encrypted_tang_exc_key, 32, password_input.c_str(), salt, true, gcm_exc_tag);
-    for (int i = 0; i < 32; ++i)
+    memcpy(encrypted_tang_exc_key, tang_exc_private_key, 66);
+    crypt_local_data_gcm(encrypted_tang_exc_key, 66, password_input.c_str(), salt, true, gcm_exc_tag);
+    for (int i = 0; i < 66; ++i)
       EEPROM.write(EEPROM_TANG_EXC_KEY_ADDR + i, encrypted_tang_exc_key[i]);
     for (int i = 0; i < GCM_TAG_SIZE; ++i)
       EEPROM.write(EEPROM_TANG_EXC_TAG_ADDR + i, gcm_exc_tag[i]);

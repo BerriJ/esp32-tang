@@ -4,6 +4,7 @@
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/sha512.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/ecdh.h>
@@ -182,9 +183,9 @@ void write_be32(uint8_t *buf, uint32_t val)
 }
 
 /**
- * @brief Generates a new secp256r1 key pair using mbedTLS.
- * @param pub_key Buffer for the public key (64 bytes, X || Y).
- * @param priv_key Buffer for the private key (32 bytes).
+ * @brief Generates a new secp521r1 (P-521) key pair using mbedTLS.
+ * @param pub_key Buffer for the public key (132 bytes, X || Y).
+ * @param priv_key Buffer for the private key (66 bytes).
  * @return true on success, false on failure.
  */
 bool generate_ec_keypair(uint8_t *pub_key, uint8_t *priv_key)
@@ -205,8 +206,8 @@ bool generate_ec_keypair(uint8_t *pub_key, uint8_t *priv_key)
 
   int ret = 0;
 
-  // Load the secp256r1 curve
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  // Load the secp521r1 (P-521) curve
+  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
   if (ret != 0)
   {
     DEBUG_PRINTF("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
@@ -221,23 +222,23 @@ bool generate_ec_keypair(uint8_t *pub_key, uint8_t *priv_key)
     goto cleanup;
   }
 
-  // Export private key (32 bytes)
-  ret = mbedtls_mpi_write_binary(&d, priv_key, 32);
+  // Export private key (66 bytes for P-521)
+  ret = mbedtls_mpi_write_binary(&d, priv_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export private key: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Export public key (64 bytes: 32 for X, 32 for Y)
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key, 32);
+  // Export public key (132 bytes: 66 for X, 66 for Y)
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export public key X: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub_key + 32, 32);
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub_key + 66, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export public key Y: -0x%04x\n", -ret);
@@ -254,8 +255,8 @@ cleanup:
 
 /**
  * @brief Computes a public key from a private key using mbedTLS.
- * @param priv_key The private key (32 bytes).
- * @param pub_key Buffer for the public key (64 bytes, X || Y).
+ * @param priv_key The private key (66 bytes for P-521).
+ * @param pub_key Buffer for the public key (132 bytes, X || Y).
  * @return true on success, false on failure.
  */
 bool compute_ec_public_key(const uint8_t *priv_key, uint8_t *pub_key)
@@ -276,16 +277,16 @@ bool compute_ec_public_key(const uint8_t *priv_key, uint8_t *pub_key)
 
   int ret = 0;
 
-  // Load the secp256r1 curve
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  // Load the secp521r1 (P-521) curve
+  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
   if (ret != 0)
   {
     DEBUG_PRINTF("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Load private key
-  ret = mbedtls_mpi_read_binary(&d, priv_key, 32);
+  // Load private key (66 bytes)
+  ret = mbedtls_mpi_read_binary(&d, priv_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load private key: -0x%04x\n", -ret);
@@ -300,15 +301,15 @@ bool compute_ec_public_key(const uint8_t *priv_key, uint8_t *pub_key)
     goto cleanup;
   }
 
-  // Export public key (64 bytes: 32 for X, 32 for Y)
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key, 32);
+  // Export public key (132 bytes: 66 for X, 66 for Y)
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export public key X: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub_key + 32, 32);
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub_key + 66, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export public key Y: -0x%04x\n", -ret);
@@ -325,9 +326,9 @@ cleanup:
 
 /**
  * @brief Computes an ECDH shared secret using mbedTLS.
- * @param eph_pub_key The ephemeral public key from the client (64 bytes, X || Y).
- * @param priv_key The server's private key (32 bytes).
- * @param shared_secret Buffer for the resulting shared secret (32 bytes).
+ * @param eph_pub_key The ephemeral public key from the client (132 bytes, X || Y for P-521).
+ * @param priv_key The server's private key (66 bytes).
+ * @param shared_secret Buffer for the resulting shared secret (66 bytes - X coordinate).
  * @return true on success, false on failure.
  */
 bool compute_ecdh_shared_secret(const uint8_t *eph_pub_key, const uint8_t *priv_key, uint8_t *shared_secret)
@@ -349,31 +350,31 @@ bool compute_ecdh_shared_secret(const uint8_t *eph_pub_key, const uint8_t *priv_
 
   int ret = 0;
 
-  // Load the secp256r1 curve
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  // Load the secp521r1 (P-521) curve
+  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
   if (ret != 0)
   {
     DEBUG_PRINTF("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Load private key
-  ret = mbedtls_mpi_read_binary(&d, priv_key, 32);
+  // Load private key (66 bytes)
+  ret = mbedtls_mpi_read_binary(&d, priv_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load private key: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Load ephemeral public key
-  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), eph_pub_key, 32);
+  // Load ephemeral public key (132 bytes)
+  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), eph_pub_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load ephemeral public key X: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(Y), eph_pub_key + 32, 32);
+  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(Y), eph_pub_key + 66, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load ephemeral public key Y: -0x%04x\n", -ret);
@@ -403,8 +404,8 @@ bool compute_ecdh_shared_secret(const uint8_t *eph_pub_key, const uint8_t *priv_
     goto cleanup;
   }
 
-  // Export the X coordinate as the shared secret
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_secret, 32);
+  // Export the X coordinate as the shared secret (66 bytes for P-521)
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_secret, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export shared secret: -0x%04x\n", -ret);
@@ -423,9 +424,9 @@ cleanup:
 /**
  * @brief Computes an ECDH shared point (both X and Y coordinates) using mbedTLS.
  * This is used for Tang's /rec endpoint which needs to return the full point.
- * @param eph_pub_key The ephemeral public key from the client (64 bytes, X || Y).
- * @param priv_key The server's private key (32 bytes).
- * @param shared_point Buffer for the resulting shared point (64 bytes, X || Y).
+ * @param eph_pub_key The ephemeral public key from the client (132 bytes, X || Y for P-521).
+ * @param priv_key The server's private key (66 bytes).
+ * @param shared_point Buffer for the resulting shared point (132 bytes, X || Y).
  * @return true on success, false on failure.
  */
 bool compute_ecdh_shared_point(const uint8_t *eph_pub_key, const uint8_t *priv_key, uint8_t *shared_point)
@@ -446,31 +447,31 @@ bool compute_ecdh_shared_point(const uint8_t *eph_pub_key, const uint8_t *priv_k
 
   int ret = 0;
 
-  // Load the secp256r1 curve
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  // Load the secp521r1 (P-521) curve
+  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
   if (ret != 0)
   {
     DEBUG_PRINTF("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Load private key
-  ret = mbedtls_mpi_read_binary(&d, priv_key, 32);
+  // Load private key (66 bytes)
+  ret = mbedtls_mpi_read_binary(&d, priv_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load private key: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Load ephemeral public key
-  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), eph_pub_key, 32);
+  // Load ephemeral public key (132 bytes)
+  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), eph_pub_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load ephemeral public key X: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(Y), eph_pub_key + 32, 32);
+  ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(Y), eph_pub_key + 66, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load ephemeral public key Y: -0x%04x\n", -ret);
@@ -500,15 +501,15 @@ bool compute_ecdh_shared_point(const uint8_t *eph_pub_key, const uint8_t *priv_k
     goto cleanup;
   }
 
-  // Export both X and Y coordinates
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_point, 32);
+  // Export both X and Y coordinates (66 bytes each for P-521)
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_point, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export shared point X: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), shared_point + 32, 32);
+  ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), shared_point + 66, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export shared point Y: -0x%04x\n", -ret);
@@ -524,13 +525,14 @@ cleanup:
 }
 
 /**
- * @brief Signs a 32-byte hash using ECDSA with P-256 curve
- * @param hash The 32-byte hash to sign
- * @param priv_key The private key (32 bytes)
- * @param signature Buffer for the signature (64 bytes: r || s)
+ * @brief Signs a hash using ECDSA with P-521 curve
+ * @param hash The hash to sign (typically 64 bytes for SHA-512)
+ * @param hash_len The length of the hash
+ * @param priv_key The private key (66 bytes)
+ * @param signature Buffer for the signature (132 bytes: r || s, each 66 bytes)
  * @return true on success, false on failure
  */
-bool sign_ecdsa_p256(const uint8_t *hash, const uint8_t *priv_key, uint8_t *signature)
+bool sign_ecdsa_p521(const uint8_t *hash, size_t hash_len, const uint8_t *priv_key, uint8_t *signature)
 {
   if (init_rng() != 0)
   {
@@ -548,16 +550,16 @@ bool sign_ecdsa_p256(const uint8_t *hash, const uint8_t *priv_key, uint8_t *sign
 
   int ret = 0;
 
-  // Load the secp256r1 curve
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  // Load the secp521r1 (P-521) curve
+  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
   if (ret != 0)
   {
     DEBUG_PRINTF("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  // Load private key
-  ret = mbedtls_mpi_read_binary(&d, priv_key, 32);
+  // Load private key (66 bytes)
+  ret = mbedtls_mpi_read_binary(&d, priv_key, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to load private key: -0x%04x\n", -ret);
@@ -565,7 +567,7 @@ bool sign_ecdsa_p256(const uint8_t *hash, const uint8_t *priv_key, uint8_t *sign
   }
 
   // Sign the hash
-  ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, 32,
+  ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, hash_len,
                            mbedtls_ctr_drbg_random, &ctr_drbg);
   if (ret != 0)
   {
@@ -573,15 +575,15 @@ bool sign_ecdsa_p256(const uint8_t *hash, const uint8_t *priv_key, uint8_t *sign
     goto cleanup;
   }
 
-  // Export r and s (each 32 bytes)
-  ret = mbedtls_mpi_write_binary(&r, signature, 32);
+  // Export r and s (each 66 bytes for P-521)
+  ret = mbedtls_mpi_write_binary(&r, signature, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export signature r: -0x%04x\n", -ret);
     goto cleanup;
   }
 
-  ret = mbedtls_mpi_write_binary(&s, signature + 32, 32);
+  ret = mbedtls_mpi_write_binary(&s, signature + 66, 66);
   if (ret != 0)
   {
     DEBUG_PRINTF("Failed to export signature s: -0x%04x\n", -ret);
