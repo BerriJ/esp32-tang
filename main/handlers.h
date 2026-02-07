@@ -179,6 +179,9 @@ void handleActivate()
     server_http.send(400, "text/plain", "Bad Request: Missing body");
     return;
   }
+
+  DEBUG_PRINTLN("Activation request received, decrypting password (this may take 20-30 seconds)...");
+
   String body = server_http.arg("plain");
 
   DynamicJsonDocument reqDoc(1024);
@@ -229,7 +232,12 @@ void handleActivate()
 
   // 4. Use decrypted password to decrypt the locally stored Tang keys
   char *password_str = (char *)password_buf;
-  DEBUG_PRINTF("Decrypted activation password: %s\n", password_str);
+  // Password successfully decrypted (not logging for security)
+
+  // Load salt from EEPROM
+  uint8_t salt[SALT_SIZE];
+  for (int i = 0; i < SALT_SIZE; ++i)
+    salt[i] = EEPROM.read(EEPROM_SALT_ADDR + i);
 
   // Decrypt signing key
   uint8_t encrypted_tang_sig_key[32];
@@ -239,7 +247,7 @@ void handleActivate()
   for (int i = 0; i < GCM_TAG_SIZE; ++i)
     gcm_sig_tag[i] = EEPROM.read(EEPROM_TANG_SIG_TAG_ADDR + i);
 
-  if (!crypt_local_data_gcm(encrypted_tang_sig_key, 32, password_str, false, gcm_sig_tag))
+  if (!crypt_local_data_gcm(encrypted_tang_sig_key, 32, password_str, salt, false, gcm_sig_tag))
   {
     DEBUG_PRINTLN("GCM tag check failed for signing key! Invalid password.");
     server_http.send(401, "text/plain", "Activation failed: invalid password for stored key");
@@ -256,7 +264,7 @@ void handleActivate()
   for (int i = 0; i < GCM_TAG_SIZE; ++i)
     gcm_exc_tag[i] = EEPROM.read(EEPROM_TANG_EXC_TAG_ADDR + i);
 
-  if (!crypt_local_data_gcm(encrypted_tang_exc_key, 32, password_str, false, gcm_exc_tag))
+  if (!crypt_local_data_gcm(encrypted_tang_exc_key, 32, password_str, salt, false, gcm_exc_tag))
   {
     DEBUG_PRINTLN("GCM tag check failed for exchange key! Invalid password.");
     server_http.send(401, "text/plain", "Activation failed: invalid password for stored key");
@@ -327,13 +335,18 @@ void handleDeactivate()
     }
 
     char *new_password_str = (char *)password_buf;
-    DEBUG_PRINTF("Received new password for saving: %s\n", new_password_str);
+    // New password successfully decrypted (not logging for security)
+
+    // Load salt from EEPROM
+    uint8_t salt[SALT_SIZE];
+    for (int i = 0; i < SALT_SIZE; ++i)
+      salt[i] = EEPROM.read(EEPROM_SALT_ADDR + i);
 
     // Save signing key
     uint8_t sig_key_to_save[32];
     uint8_t new_sig_gcm_tag[GCM_TAG_SIZE];
     memcpy(sig_key_to_save, tang_sig_private_key, 32);
-    crypt_local_data_gcm(sig_key_to_save, 32, new_password_str, true, new_sig_gcm_tag);
+    crypt_local_data_gcm(sig_key_to_save, 32, new_password_str, salt, true, new_sig_gcm_tag);
 
     for (int i = 0; i < 32; ++i)
       EEPROM.write(EEPROM_TANG_SIG_KEY_ADDR + i, sig_key_to_save[i]);
@@ -344,7 +357,7 @@ void handleDeactivate()
     uint8_t exc_key_to_save[32];
     uint8_t new_exc_gcm_tag[GCM_TAG_SIZE];
     memcpy(exc_key_to_save, tang_exc_private_key, 32);
-    crypt_local_data_gcm(exc_key_to_save, 32, new_password_str, true, new_exc_gcm_tag);
+    crypt_local_data_gcm(exc_key_to_save, 32, new_password_str, salt, true, new_exc_gcm_tag);
 
     for (int i = 0; i < 32; ++i)
       EEPROM.write(EEPROM_TANG_EXC_KEY_ADDR + i, exc_key_to_save[i]);

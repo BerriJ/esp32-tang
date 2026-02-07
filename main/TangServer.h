@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
+#include <esp_task_wdt.h>
 #include "sdkconfig.h"
 
 // --- Compile-time Configuration ---
@@ -34,16 +35,12 @@ WifiMode current_wifi_mode = TANG_WIFI_STA;
 unsigned long mode_switch_timestamp = 0;
 const unsigned long WIFI_MODE_DURATION = 60000; // 60 seconds
 
-// --- Initial Setup Configuration ---
-const char *initial_tang_password = CONFIG_INITIAL_TANG_PASSWORD;
-
 // --- Server & Crypto Globals ---
 WebServer server_http(80);
 
 // --- Server State ---
 bool is_active = false;
-unsigned long activation_timestamp = 0;
-const unsigned long KEY_LIFETIME_MS = 3600000; // 1 hour
+unsigned long activation_timestamp = 0; // Timestamp when server was activated
 
 // --- Key Storage ---
 uint8_t tang_sig_private_key[32]; // Signing key - in-memory only when active
@@ -56,7 +53,8 @@ uint8_t admin_public_key[64];     // Derived from private key
 // --- EEPROM Configuration ---
 const int EEPROM_SIZE = 4096;
 const int EEPROM_MAGIC_ADDR = 0;
-const int EEPROM_ADMIN_KEY_ADDR = 4;
+const int EEPROM_SALT_ADDR = 4; // 16 bytes for PBKDF2 salt
+const int EEPROM_ADMIN_KEY_ADDR = 20;
 const int EEPROM_TANG_SIG_KEY_ADDR = EEPROM_ADMIN_KEY_ADDR + 32;
 const int GCM_TAG_SIZE = 16;
 const int EEPROM_TANG_SIG_TAG_ADDR = EEPROM_TANG_SIG_KEY_ADDR + 32;
@@ -65,6 +63,7 @@ const int EEPROM_TANG_EXC_TAG_ADDR = EEPROM_TANG_EXC_KEY_ADDR + 32;
 const int EEPROM_WIFI_SSID_ADDR = EEPROM_TANG_EXC_TAG_ADDR + GCM_TAG_SIZE;
 const int EEPROM_WIFI_PASS_ADDR = EEPROM_WIFI_SSID_ADDR + 33;
 const uint32_t EEPROM_MAGIC_VALUE = 0xCAFEDEAD;
+const int SALT_SIZE = 16;
 
 // Forward declare functions
 void startAPMode();
@@ -103,45 +102,121 @@ void setup()
   }
   else
   {
-    DEBUG_PRINTLN("First run or NUKE'd: generating and saving new keys and certificate...");
+    DEBUG_PRINTLN("First run or NUKE'd: generating and saving new keys...");
+    DEBUG_PRINTLN("\n=======================================================");
+    DEBUG_PRINTLN("FIRST BOOT: INITIAL SETUP REQUIRED");
+    DEBUG_PRINTLN("=======================================================");
 
-    // 1. Generate and save admin key
+    // 1. Generate random salt for PBKDF2
+    uint8_t salt[SALT_SIZE];
+    esp_fill_random(salt, SALT_SIZE);
+    for (int i = 0; i < SALT_SIZE; ++i)
+      EEPROM.write(EEPROM_SALT_ADDR + i, salt[i]);
+    DEBUG_PRINTLN("Generated device-specific salt");
+
+    // 2. Generate and save admin key
     generate_ec_keypair(admin_public_key, admin_private_key);
     for (int i = 0; i < 32; ++i)
       EEPROM.write(EEPROM_ADMIN_KEY_ADDR + i, admin_private_key[i]);
+    DEBUG_PRINTLN("Generated admin keypair");
 
-    // 2. Generate initial Tang signing key and encrypt it with the default password
+    // 3. Prompt for initial password via serial
+    DEBUG_PRINTLN("\nPlease enter a password to encrypt the Tang keys:");
+    DEBUG_PRINTLN("(Password will be used for activation/deactivation)");
+    DEBUG_PRINTLN("Type your password and press Enter");
+    DEBUG_PRINT("> ");
+
+    // Wait for password input (wait for complete line with Enter)
+    String password_input = "";
+    bool password_complete = false;
+
+    while (!password_complete)
+    {
+      while (Serial.available() > 0)
+      {
+        char c = Serial.read();
+        if (c == '\n' || c == '\r')
+        {
+          if (password_input.length() > 0)
+          {
+            password_complete = true;
+            break;
+          }
+          // Ignore empty lines (just pressing Enter without typing)
+        }
+        else if (c >= 32 && c <= 126) // Printable ASCII characters only
+        {
+          password_input += c;
+          Serial.print('*'); // Echo asterisks for security
+        }
+      }
+      delay(10);
+    }
+    DEBUG_PRINTLN(); // New line after password input
+
+    if (password_input.length() < 8)
+    {
+      DEBUG_PRINTLN("ERROR: Password must be at least 8 characters!");
+      DEBUG_PRINTLN("Device requires restart. Send NUKE command to try again.");
+      while (true)
+        delay(1000); // Halt
+    }
+
+    DEBUG_PRINTF("Password set (%d characters)\n", password_input.length());
+
+    // Temporarily disable watchdog for PBKDF2 operations (can take 30-40 seconds)
+    DEBUG_PRINTLN("Disabling watchdog timer for key generation...");
+    esp_task_wdt_deinit();
+
+    // 4. Generate initial Tang signing key and encrypt it with the password
+    DEBUG_PRINTLN("Generating and encrypting signing key (this may take 20-30 seconds)...");
     generate_ec_keypair(tang_sig_public_key, tang_sig_private_key);
     uint8_t encrypted_tang_sig_key[32];
     uint8_t gcm_sig_tag[GCM_TAG_SIZE];
     memcpy(encrypted_tang_sig_key, tang_sig_private_key, 32);
-    crypt_local_data_gcm(encrypted_tang_sig_key, 32, initial_tang_password, true, gcm_sig_tag);
+    crypt_local_data_gcm(encrypted_tang_sig_key, 32, password_input.c_str(), salt, true, gcm_sig_tag);
     for (int i = 0; i < 32; ++i)
       EEPROM.write(EEPROM_TANG_SIG_KEY_ADDR + i, encrypted_tang_sig_key[i]);
     for (int i = 0; i < GCM_TAG_SIZE; ++i)
       EEPROM.write(EEPROM_TANG_SIG_TAG_ADDR + i, gcm_sig_tag[i]);
 
-    // 3. Generate initial Tang exchange key and encrypt it with the default password
+    // 5. Generate initial Tang exchange key and encrypt it with the password
+    DEBUG_PRINTLN("Generating and encrypting exchange key...");
     generate_ec_keypair(tang_exc_public_key, tang_exc_private_key);
     uint8_t encrypted_tang_exc_key[32];
     uint8_t gcm_exc_tag[GCM_TAG_SIZE];
     memcpy(encrypted_tang_exc_key, tang_exc_private_key, 32);
-    crypt_local_data_gcm(encrypted_tang_exc_key, 32, initial_tang_password, true, gcm_exc_tag);
+    crypt_local_data_gcm(encrypted_tang_exc_key, 32, password_input.c_str(), salt, true, gcm_exc_tag);
     for (int i = 0; i < 32; ++i)
       EEPROM.write(EEPROM_TANG_EXC_KEY_ADDR + i, encrypted_tang_exc_key[i]);
     for (int i = 0; i < GCM_TAG_SIZE; ++i)
       EEPROM.write(EEPROM_TANG_EXC_TAG_ADDR + i, gcm_exc_tag[i]);
 
-    // 4. Write magic number and commit
+    // 6. Write magic number and commit
     EEPROM.put(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VALUE);
     if (EEPROM.commit())
     {
       DEBUG_PRINTLN("Initial configuration saved to EEPROM.");
+      DEBUG_PRINTLN("=======================================================");
+      DEBUG_PRINTLN("Setup complete! Device is ready to use.");
+      DEBUG_PRINTLN("Use this password for /activate and /deactivate");
+      DEBUG_PRINTLN("=======================================================\n");
     }
     else
     {
       DEBUG_PRINTLN("ERROR: Failed to save to EEPROM!");
     }
+
+    // Re-enable watchdog after setup
+    DEBUG_PRINTLN("Re-enabling watchdog timer...");
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 5000,
+        .idle_core_mask = (1 << 0) | (1 << 1),
+        .trigger_panic = false};
+    esp_task_wdt_init(&wdt_config);
+
+    // Clear password from memory
+    password_input = "";
   }
 
   DEBUG_PRINTLN("Admin Public Key:");
@@ -224,13 +299,6 @@ void loop()
       if ((millis() % 2000) < 50)
         DEBUG_PRINT(".");
     }
-  }
-
-  // --- Automatic Deactivation Timer ---
-  if (is_active && (millis() - activation_timestamp > KEY_LIFETIME_MS))
-  {
-    DEBUG_PRINTLN("Key lifetime expired. Deactivating server automatically.");
-    deactivate_server();
   }
 
   server_http.handleClient();

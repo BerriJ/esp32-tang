@@ -10,6 +10,8 @@
 #include <mbedtls/ecp.h>
 #include <mbedtls/ecdsa.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/md.h>
+#include <mbedtls/pkcs5.h>
 #include <esp_system.h> // For esp_fill_random
 
 // Debug macros (duplicated from TangServer.h to fix include order)
@@ -683,29 +685,69 @@ bool jwe_gcm_decrypt(uint8_t *ciphertext_buf, size_t ciphertext_len,
 }
 
 /**
- * @brief Derives a key from a password using SHA-256 with the mbedTLS C API.
+ * @brief Derives a key from a password using PBKDF2-HMAC-SHA256 with the mbedTLS C API.
+ * @param output_key Buffer for the derived key
+ * @param key_len Length of the key to derive (typically 16 for AES-128)
+ * @param password The password string
+ * @param salt Salt value (must be at least 16 bytes)
+ * @param salt_len Length of the salt
+ * @param iterations Number of PBKDF2 iterations (recommend 100,000+)
+ * @return 0 on success, negative on failure
  */
-void derive_key_from_password(uint8_t *output_key, size_t key_len, const char *password)
+int derive_key_from_password_pbkdf2(uint8_t *output_key, size_t key_len,
+                                    const char *password,
+                                    const uint8_t *salt, size_t salt_len,
+                                    int iterations)
 {
-  mbedtls_sha256_context sha_ctx;
-  mbedtls_sha256_init(&sha_ctx);
-  mbedtls_sha256_starts(&sha_ctx, 0); // 0 for SHA-256
-  mbedtls_sha256_update(&sha_ctx, (const uint8_t *)password, strlen(password));
+  mbedtls_md_context_t md_ctx;
+  mbedtls_md_init(&md_ctx);
 
-  uint8_t hash[32];
-  mbedtls_sha256_finish(&sha_ctx, hash);
-  mbedtls_sha256_free(&sha_ctx);
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  int ret = mbedtls_md_setup(&md_ctx, md_info, 1); // 1 = HMAC
+  if (ret != 0)
+  {
+    DEBUG_PRINTF("mbedtls_md_setup failed: -0x%04x\n", -ret);
+    mbedtls_md_free(&md_ctx);
+    return ret;
+  }
 
-  memcpy(output_key, hash, key_len);
+  ret = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
+                                      (const uint8_t *)password, strlen(password),
+                                      salt, salt_len,
+                                      iterations,
+                                      key_len, output_key);
+
+  if (ret != 0)
+  {
+    DEBUG_PRINTF("mbedtls_pkcs5_pbkdf2_hmac_ext failed: -0x%04x\n", -ret);
+  }
+
+  mbedtls_md_free(&md_ctx);
+  return ret;
 }
 
 /**
- * @brief Encrypts or decrypts local data using AES-GCM with the mbedTLS C API.
+ * @brief Encrypts or decrypts local data using AES-GCM with PBKDF2 key derivation.
+ * @param data Data buffer (in-place encryption/decryption)
+ * @param data_len Length of data
+ * @param pw Password string
+ * @param salt Salt for PBKDF2 (must be 16 bytes)
+ * @param encrypt true to encrypt, false to decrypt
+ * @param tag_buffer GCM authentication tag (16 bytes)
+ * @return true on success, false on failure
  */
-bool crypt_local_data_gcm(uint8_t *data, size_t data_len, const char *pw, bool encrypt, uint8_t *tag_buffer)
+bool crypt_local_data_gcm(uint8_t *data, size_t data_len, const char *pw,
+                          const uint8_t *salt, bool encrypt, uint8_t *tag_buffer)
 {
   byte key[16], iv[12];
-  derive_key_from_password(key, sizeof(key), pw);
+
+  // Derive key using PBKDF2 with 100,000 iterations
+  if (derive_key_from_password_pbkdf2(key, sizeof(key), pw, salt, 16, 100000) != 0)
+  {
+    DEBUG_PRINTLN("PBKDF2 key derivation failed");
+    return false;
+  }
+
   memset(iv, 0, 12);
 
   mbedtls_gcm_context gcm_ctx;
