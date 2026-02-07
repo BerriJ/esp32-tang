@@ -318,6 +318,7 @@ void startAPMode()
 void startSTAMode()
 {
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname("esp-tang"); // Set mDNS hostname
   if (strlen(wifi_ssid) > 0)
   {
     WiFi.begin(wifi_ssid, wifi_password);
