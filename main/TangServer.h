@@ -156,6 +156,9 @@ void setup_routes()
   server_http.on("/pub", HTTP_GET, handle_pub);
   server_http.on("/activate", HTTP_POST, handle_activate);
   server_http.on("/reboot", HTTP_GET, handle_reboot);
+  server_http.on("/reset", HTTP_GET, handle_reset);
+  server_http.on("/nuke", HTTP_GET, handle_reset);
+
   server_http.onNotFound(handle_not_found);
 }
 
@@ -165,27 +168,26 @@ void setup()
   Serial.begin(115200);
   DEBUG_PRINTLN("\n\nESP32 Tang Server Starting...");
 
-  // Check if configured
+  // Load or initialize configuration
+  bool success;
   if (keystore.is_configured())
   {
     DEBUG_PRINTLN("Found existing configuration");
-
-    if (!keystore.load_admin_key())
-    {
-      DEBUG_PRINTLN("ERROR: Failed to load admin key");
-      while (true)
-        delay(1000);
-    }
-
-    DEBUG_PRINTLN("Loaded admin key");
+    success = keystore.load_admin_key();
+    if (success)
+      DEBUG_PRINTLN("Loaded admin key");
   }
   else
   {
-    if (!perform_initial_setup())
-    {
-      while (true)
-        delay(1000);
-    }
+    success = perform_initial_setup();
+  }
+
+  if (!success)
+  {
+    DEBUG_PRINTLN("ERROR: Setup failed. Nuking and restarting...");
+    keystore.nuke();
+    delay(1000);
+    ESP.restart();
   }
 
   DEBUG_PRINTLN("\nAdmin Public Key (Base64):");
@@ -207,22 +209,6 @@ void setup()
 // --- Main Loop ---
 void loop()
 {
-  // Handle serial commands
-  if (Serial.available() > 0)
-  {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command.equalsIgnoreCase("NUKE"))
-    {
-      DEBUG_PRINTLN("!!! NUKE command received! Wiping configuration...");
-      keystore.nuke();
-      DEBUG_PRINTLN("Configuration wiped. Restarting device.");
-      delay(1000);
-      ESP.restart();
-    }
-  }
-
   // WiFi status indicator
   if (WiFi.status() != WL_CONNECTED)
   {

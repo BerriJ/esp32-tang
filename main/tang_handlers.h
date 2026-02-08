@@ -197,15 +197,20 @@ void handle_activate()
   char password[65] = {0};
   if (!JWE::decrypt_password(req_doc, keystore.admin_priv, password, sizeof(password)))
   {
-    server_http.send(401, "text/plain", "Decryption failed");
+    DEBUG_PRINTLN("Decryption failed - Nuking configuration...");
+    keystore.nuke();
+    server_http.send(401, "text/plain", "Decryption failed - nuked configuration...");
     return;
   }
 
   // Decrypt Tang keys using password
   if (!keystore.decrypt_and_load_tang_keys(password))
   {
-    server_http.send(401, "text/plain", "Invalid password");
-    return;
+    DEBUG_PRINTLN("Invalid password - Nuking configuration...");
+    keystore.nuke();
+    server_http.send(401, "text/plain", "Wrong password, nuked configuration.");
+    delay(500);
+    ESP.restart();
   }
 
   is_active = true;
@@ -217,6 +222,16 @@ void handle_activate()
 void handle_reboot()
 {
   server_http.send(200, "text/plain", "Rebooting...");
+  delay(1000);
+  ESP.restart();
+}
+
+// GET /reset - Nuke configuration and restart
+void handle_reset()
+{
+  DEBUG_PRINTLN("Reset endpoint called. Nuking configuration...");
+  keystore.nuke();
+  server_http.send(200, "text/plain", "Nuked configuration and restarting...");
   delay(1000);
   ESP.restart();
 }
