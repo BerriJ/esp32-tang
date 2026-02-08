@@ -4,7 +4,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
-#include <EEPROM.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
 #include "sdkconfig.h"
 
@@ -47,22 +47,12 @@ uint8_t tang_sig_private_key[66]; // Signing key - in-memory only when active (P
 uint8_t tang_sig_public_key[132]; // Signing key - in-memory only when active (P-521)
 uint8_t tang_exc_private_key[66]; // Exchange key - in-memory only when active (P-521)
 uint8_t tang_exc_public_key[132]; // Exchange key - in-memory only when active (P-521)
-uint8_t admin_private_key[66];    // Persistent in EEPROM (P-521)
+uint8_t admin_private_key[66];    // Persistent in NVS (P-521)
 uint8_t admin_public_key[132];    // Derived from private key (P-521)
 
-// --- EEPROM Configuration ---
-const int EEPROM_SIZE = 4096;
-const int EEPROM_MAGIC_ADDR = 0;
-const int EEPROM_SALT_ADDR = 4;       // 16 bytes for PBKDF2 salt
-const int EEPROM_ADMIN_KEY_ADDR = 20; // 66 bytes for P-521 private key
-const int EEPROM_TANG_SIG_KEY_ADDR = EEPROM_ADMIN_KEY_ADDR + 66;
+// --- Preferences Configuration ---
+Preferences preferences;
 const int GCM_TAG_SIZE = 16;
-const int EEPROM_TANG_SIG_TAG_ADDR = EEPROM_TANG_SIG_KEY_ADDR + 66;
-const int EEPROM_TANG_EXC_KEY_ADDR = EEPROM_TANG_SIG_TAG_ADDR + GCM_TAG_SIZE;
-const int EEPROM_TANG_EXC_TAG_ADDR = EEPROM_TANG_EXC_KEY_ADDR + 66;
-const int EEPROM_WIFI_SSID_ADDR = EEPROM_TANG_EXC_TAG_ADDR + GCM_TAG_SIZE;
-const int EEPROM_WIFI_PASS_ADDR = EEPROM_WIFI_SSID_ADDR + 33;
-const uint32_t EEPROM_MAGIC_VALUE = 0xCAFEDEAD;
 const int SALT_SIZE = 16;
 
 // Forward declare functions
@@ -79,25 +69,35 @@ void setup()
   Serial.begin(115200);
   DEBUG_PRINTLN("\n\nESP32 Tang Server Starting...");
 
-  EEPROM.begin(EEPROM_SIZE);
-  uint32_t magic = 0;
-  EEPROM.get(EEPROM_MAGIC_ADDR, magic);
+  preferences.begin("tang-server", false);
+  bool is_configured = preferences.isKey("admin_key");
 
-  if (magic == EEPROM_MAGIC_VALUE)
+  if (is_configured)
   {
-    DEBUG_PRINTLN("Found existing configuration in EEPROM.");
+    DEBUG_PRINTLN("Found existing configuration in NVS.");
     // Load Admin Key
-    for (int i = 0; i < 66; ++i)
-      admin_private_key[i] = EEPROM.read(EEPROM_ADMIN_KEY_ADDR + i);
-    compute_ec_public_key(admin_private_key, admin_public_key);
-    DEBUG_PRINTLN("Loaded admin key.");
+    size_t len = preferences.getBytes("admin_key", admin_private_key, 66);
+    if (len == 66)
+    {
+      compute_ec_public_key(admin_private_key, admin_public_key);
+      DEBUG_PRINTLN("Loaded admin key.");
+    }
+    else
+    {
+      DEBUG_PRINTLN("ERROR: Failed to load admin key!");
+    }
 
     // Load Wi-Fi credentials if they exist
-    if (EEPROM.read(EEPROM_WIFI_SSID_ADDR) != 0xFF && EEPROM.read(EEPROM_WIFI_SSID_ADDR) != 0)
+    if (preferences.isKey("wifi_ssid"))
     {
-      EEPROM.get(EEPROM_WIFI_SSID_ADDR, wifi_ssid);
-      EEPROM.get(EEPROM_WIFI_PASS_ADDR, wifi_password);
-      DEBUG_PRINTLN("Loaded Wi-Fi credentials from EEPROM.");
+      String ssid = preferences.getString("wifi_ssid", "");
+      String pass = preferences.getString("wifi_pass", "");
+      if (ssid.length() > 0)
+      {
+        wifi_ssid = ssid.c_str();
+        wifi_password = pass.c_str();
+        DEBUG_PRINTLN("Loaded Wi-Fi credentials from NVS.");
+      }
     }
   }
   else
@@ -110,14 +110,12 @@ void setup()
     // 1. Generate random salt for PBKDF2
     uint8_t salt[SALT_SIZE];
     esp_fill_random(salt, SALT_SIZE);
-    for (int i = 0; i < SALT_SIZE; ++i)
-      EEPROM.write(EEPROM_SALT_ADDR + i, salt[i]);
+    preferences.putBytes("salt", salt, SALT_SIZE);
     DEBUG_PRINTLN("Generated device-specific salt");
 
     // 2. Generate and save admin key
     generate_ec_keypair(admin_public_key, admin_private_key);
-    for (int i = 0; i < 66; ++i)
-      EEPROM.write(EEPROM_ADMIN_KEY_ADDR + i, admin_private_key[i]);
+    preferences.putBytes("admin_key", admin_private_key, 66);
     DEBUG_PRINTLN("Generated admin keypair");
 
     // 3. Prompt for initial password via serial
@@ -175,10 +173,8 @@ void setup()
     uint8_t gcm_sig_tag[GCM_TAG_SIZE];
     memcpy(encrypted_tang_sig_key, tang_sig_private_key, 66);
     crypt_local_data_gcm(encrypted_tang_sig_key, 66, password_input.c_str(), salt, true, gcm_sig_tag);
-    for (int i = 0; i < 66; ++i)
-      EEPROM.write(EEPROM_TANG_SIG_KEY_ADDR + i, encrypted_tang_sig_key[i]);
-    for (int i = 0; i < GCM_TAG_SIZE; ++i)
-      EEPROM.write(EEPROM_TANG_SIG_TAG_ADDR + i, gcm_sig_tag[i]);
+    preferences.putBytes("tang_sig_key", encrypted_tang_sig_key, 66);
+    preferences.putBytes("tang_sig_tag", gcm_sig_tag, GCM_TAG_SIZE);
 
     // 5. Generate initial Tang exchange key and encrypt it with the password
     DEBUG_PRINTLN("Generating and encrypting exchange key...");
@@ -187,25 +183,15 @@ void setup()
     uint8_t gcm_exc_tag[GCM_TAG_SIZE];
     memcpy(encrypted_tang_exc_key, tang_exc_private_key, 66);
     crypt_local_data_gcm(encrypted_tang_exc_key, 66, password_input.c_str(), salt, true, gcm_exc_tag);
-    for (int i = 0; i < 66; ++i)
-      EEPROM.write(EEPROM_TANG_EXC_KEY_ADDR + i, encrypted_tang_exc_key[i]);
-    for (int i = 0; i < GCM_TAG_SIZE; ++i)
-      EEPROM.write(EEPROM_TANG_EXC_TAG_ADDR + i, gcm_exc_tag[i]);
+    preferences.putBytes("tang_exc_key", encrypted_tang_exc_key, 66);
+    preferences.putBytes("tang_exc_tag", gcm_exc_tag, GCM_TAG_SIZE);
 
-    // 6. Write magic number and commit
-    EEPROM.put(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VALUE);
-    if (EEPROM.commit())
-    {
-      DEBUG_PRINTLN("Initial configuration saved to EEPROM.");
-      DEBUG_PRINTLN("=======================================================");
-      DEBUG_PRINTLN("Setup complete! Device is ready to use.");
-      DEBUG_PRINTLN("Use this password for /activate and /deactivate");
-      DEBUG_PRINTLN("=======================================================\n");
-    }
-    else
-    {
-      DEBUG_PRINTLN("ERROR: Failed to save to EEPROM!");
-    }
+    // 6. Configuration saved automatically by Preferences
+    DEBUG_PRINTLN("Initial configuration saved to NVS.");
+    DEBUG_PRINTLN("=======================================================");
+    DEBUG_PRINTLN("Setup complete! Device is ready to use.");
+    DEBUG_PRINTLN("Use this password for /activate and /deactivate");
+    DEBUG_PRINTLN("=======================================================\n");
 
     // Re-enable watchdog after setup
     DEBUG_PRINTLN("Re-enabling watchdog timer...");
@@ -263,17 +249,9 @@ void loop()
     if (command.equalsIgnoreCase("NUKE"))
     {
       DEBUG_PRINTLN("!!! NUKE command received! Wiping configuration...");
-      // By writing a different value to the magic address, we force
-      // the setup() function to re-initialize everything on next boot.
-      EEPROM.put(EEPROM_MAGIC_ADDR, (uint32_t)0x00);
-      if (EEPROM.commit())
-      {
-        DEBUG_PRINTLN("Configuration wiped. Restarting device.");
-      }
-      else
-      {
-        DEBUG_PRINTLN("ERROR: Failed to wipe configuration!");
-      }
+      preferences.clear();
+      preferences.end();
+      DEBUG_PRINTLN("Configuration wiped. Restarting device.");
       delay(1000);
       ESP.restart();
     }

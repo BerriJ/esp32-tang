@@ -234,18 +234,15 @@ void handleActivate()
   char *password_str = (char *)password_buf;
   // Password successfully decrypted (not logging for security)
 
-  // Load salt from EEPROM
+  // Load salt from NVS
   uint8_t salt[SALT_SIZE];
-  for (int i = 0; i < SALT_SIZE; ++i)
-    salt[i] = EEPROM.read(EEPROM_SALT_ADDR + i);
+  preferences.getBytes("salt", salt, SALT_SIZE);
 
   // Decrypt signing key
   uint8_t encrypted_tang_sig_key[66];
   uint8_t gcm_sig_tag[GCM_TAG_SIZE];
-  for (int i = 0; i < 66; ++i)
-    encrypted_tang_sig_key[i] = EEPROM.read(EEPROM_TANG_SIG_KEY_ADDR + i);
-  for (int i = 0; i < GCM_TAG_SIZE; ++i)
-    gcm_sig_tag[i] = EEPROM.read(EEPROM_TANG_SIG_TAG_ADDR + i);
+  preferences.getBytes("tang_sig_key", encrypted_tang_sig_key, 66);
+  preferences.getBytes("tang_sig_tag", gcm_sig_tag, GCM_TAG_SIZE);
 
   if (!crypt_local_data_gcm(encrypted_tang_sig_key, 66, password_str, salt, false, gcm_sig_tag))
   {
@@ -259,10 +256,8 @@ void handleActivate()
   // Decrypt exchange key
   uint8_t encrypted_tang_exc_key[66];
   uint8_t gcm_exc_tag[GCM_TAG_SIZE];
-  for (int i = 0; i < 66; ++i)
-    encrypted_tang_exc_key[i] = EEPROM.read(EEPROM_TANG_EXC_KEY_ADDR + i);
-  for (int i = 0; i < GCM_TAG_SIZE; ++i)
-    gcm_exc_tag[i] = EEPROM.read(EEPROM_TANG_EXC_TAG_ADDR + i);
+  preferences.getBytes("tang_exc_key", encrypted_tang_exc_key, 66);
+  preferences.getBytes("tang_exc_tag", gcm_exc_tag, GCM_TAG_SIZE);
 
   if (!crypt_local_data_gcm(encrypted_tang_exc_key, 66, password_str, salt, false, gcm_exc_tag))
   {
@@ -337,10 +332,9 @@ void handleDeactivate()
     char *new_password_str = (char *)password_buf;
     // New password successfully decrypted (not logging for security)
 
-    // Load salt from EEPROM
+    // Load salt from NVS
     uint8_t salt[SALT_SIZE];
-    for (int i = 0; i < SALT_SIZE; ++i)
-      salt[i] = EEPROM.read(EEPROM_SALT_ADDR + i);
+    preferences.getBytes("salt", salt, SALT_SIZE);
 
     // Save signing key
     uint8_t sig_key_to_save[66];
@@ -348,10 +342,8 @@ void handleDeactivate()
     memcpy(sig_key_to_save, tang_sig_private_key, 66);
     crypt_local_data_gcm(sig_key_to_save, 66, new_password_str, salt, true, new_sig_gcm_tag);
 
-    for (int i = 0; i < 66; ++i)
-      EEPROM.write(EEPROM_TANG_SIG_KEY_ADDR + i, sig_key_to_save[i]);
-    for (int i = 0; i < GCM_TAG_SIZE; ++i)
-      EEPROM.write(EEPROM_TANG_SIG_TAG_ADDR + i, new_sig_gcm_tag[i]);
+    preferences.putBytes("tang_sig_key", sig_key_to_save, 66);
+    preferences.putBytes("tang_sig_tag", new_sig_gcm_tag, GCM_TAG_SIZE);
 
     // Save exchange key
     uint8_t exc_key_to_save[66];
@@ -359,14 +351,10 @@ void handleDeactivate()
     memcpy(exc_key_to_save, tang_exc_private_key, 66);
     crypt_local_data_gcm(exc_key_to_save, 66, new_password_str, salt, true, new_exc_gcm_tag);
 
-    for (int i = 0; i < 66; ++i)
-      EEPROM.write(EEPROM_TANG_EXC_KEY_ADDR + i, exc_key_to_save[i]);
-    for (int i = 0; i < GCM_TAG_SIZE; ++i)
-      EEPROM.write(EEPROM_TANG_EXC_TAG_ADDR + i, new_exc_gcm_tag[i]);
+    preferences.putBytes("tang_exc_key", exc_key_to_save, 66);
+    preferences.putBytes("tang_exc_tag", new_exc_gcm_tag, GCM_TAG_SIZE);
 
-    EEPROM.commit();
-
-    DEBUG_PRINTLN("New encrypted Tang keys saved to EEPROM.");
+    DEBUG_PRINTLN("New encrypted Tang keys saved to NVS.");
     deactivate_server();
     server_http.send(200, "text/plain", "Key saved and server deactivated");
   }
