@@ -26,14 +26,6 @@
 // --- Wi-Fi Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
 const char *wifi_password = CONFIG_WIFI_PASSWORD;
-enum WifiMode
-{
-  TANG_WIFI_STA,
-  TANG_WIFI_AP
-};
-WifiMode current_wifi_mode = TANG_WIFI_STA;
-unsigned long mode_switch_timestamp = 0;
-const unsigned long WIFI_MODE_DURATION = 60000; // 60 seconds
 
 // --- Server & Crypto Globals ---
 WebServer server_http(80);
@@ -56,7 +48,6 @@ const int GCM_TAG_SIZE = 16;
 const int SALT_SIZE = 16;
 
 // Forward declare functions
-void startAPMode();
 void startSTAMode();
 
 // Include helper and handler files
@@ -260,43 +251,19 @@ void loop()
   // --- Wi-Fi Connection Management ---
   if (WiFi.status() != WL_CONNECTED)
   {
-    if (millis() - mode_switch_timestamp > WIFI_MODE_DURATION)
-    {
-      if (current_wifi_mode == TANG_WIFI_STA)
-      {
-        startAPMode();
-      }
-      else
-      {
-        startSTAMode();
-      }
-    }
-    if (current_wifi_mode == TANG_WIFI_STA)
-    {
-      // Print a dot every so often while trying to connect
-      if ((millis() % 2000) < 50)
-        DEBUG_PRINT(".");
-    }
+    // Print a dot every so often while trying to connect
+    if ((millis() % 2000) < 50)
+      DEBUG_PRINT(".");
   }
 
   server_http.handleClient();
 }
 
-// --- WiFi Mode Management ---
-void startAPMode()
-{
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP("Tang-Server-Setup", NULL);
-  DEBUG_PRINTLN("\nStarting Access Point 'Tang-Server-Setup'.");
-  DEBUG_PRINTF("AP IP address: %s\n", WiFi.softAPIP().toString().c_str());
-  current_wifi_mode = TANG_WIFI_AP;
-  mode_switch_timestamp = millis();
-}
-
+// --- WiFi Station Mode ---
 void startSTAMode()
 {
   WiFi.mode(WIFI_STA);
-  WiFi.setHostname("esp-tang"); // Set mDNS hostname
+  WiFi.setHostname("esp-tang");
   if (strlen(wifi_ssid) > 0)
   {
     WiFi.begin(wifi_ssid, wifi_password);
@@ -306,8 +273,6 @@ void startSTAMode()
   {
     DEBUG_PRINTLN("\nNo WiFi SSID configured. Skipping connection attempt.");
   }
-  current_wifi_mode = TANG_WIFI_STA;
-  mode_switch_timestamp = millis();
 }
 
 #endif // TANG_SERVER_H
