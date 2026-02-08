@@ -188,8 +188,9 @@ void setup()
     }
   }
 
-  DEBUG_PRINTLN("Admin Public Key:");
-  print_hex(keystore.admin_pub, P521_PUBLIC_KEY_SIZE);
+  DEBUG_PRINTLN("\nAdmin Public Key (Base64):");
+  DEBUG_PRINTF("\nAdmin Public Key x: %s", Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE).c_str());
+  DEBUG_PRINTF("\nAdmin Public Key y: %s", Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
 
   setup_wifi();
   setup_routes();
