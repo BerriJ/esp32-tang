@@ -25,6 +25,8 @@
 #include "jwe.h"
 #include "tang_storage.h"
 #include "tang_handlers.h"
+#include "zk_auth.h"
+#include "zk_handlers.h"
 
 // --- Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
@@ -34,6 +36,7 @@ const char *wifi_password = CONFIG_WIFI_PASSWORD;
 WebServer server_http(80);
 TangKeyStore keystore;
 bool is_active = false;
+ZKAuth zk_auth; // Zero-Knowledge Authentication
 
 // --- WiFi Setup ---
 void setup_wifi()
@@ -149,15 +152,19 @@ bool perform_initial_setup()
 // --- Setup Routes ---
 void setup_routes()
 {
-  server_http.on("/adv", HTTP_GET, handle_adv);
-  server_http.on("/adv/", HTTP_GET, handle_adv);
-  server_http.on("/rec", HTTP_POST, handle_rec);
-  server_http.on("/rec/", HTTP_POST, handle_rec);
-  server_http.on("/pub", HTTP_GET, handle_pub);
-  server_http.on("/activate", HTTP_POST, handle_activate);
-  server_http.on("/reboot", HTTP_GET, handle_reboot);
-  server_http.on("/reset", HTTP_GET, handle_reset);
-  server_http.on("/nuke", HTTP_GET, handle_reset);
+  // ZK Authentication routes (on root paths)
+  setup_zk_routes();
+
+  // Tang server routes (prefixed with /tang/)
+  server_http.on("/tang/adv", HTTP_GET, handle_adv);
+  server_http.on("/tang/adv/", HTTP_GET, handle_adv);
+  server_http.on("/tang/rec", HTTP_POST, handle_rec);
+  server_http.on("/tang/rec/", HTTP_POST, handle_rec);
+  server_http.on("/tang/pub", HTTP_GET, handle_pub);
+  server_http.on("/tang/activate", HTTP_POST, handle_activate);
+  server_http.on("/tang/reboot", HTTP_GET, handle_reboot);
+  server_http.on("/tang/reset", HTTP_GET, handle_reset);
+  server_http.on("/tang/nuke", HTTP_GET, handle_reset);
 
   server_http.onNotFound(handle_not_found);
 }
@@ -194,15 +201,38 @@ void setup()
   DEBUG_PRINTF("\nAdmin Public Key x: %s", Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE).c_str());
   DEBUG_PRINTF("\nAdmin Public Key y: %s", Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
 
+  // Initialize Zero-Knowledge Authentication
+  DEBUG_PRINTLN("\n\nInitializing Zero-Knowledge Authentication...");
+  if (zk_auth.init())
+  {
+    DEBUG_PRINTLN("ZK Auth initialized successfully");
+
+    // Set test password
+    if (zk_auth.set_password("password"))
+    {
+      DEBUG_PRINTLN("Test password set successfully");
+    }
+    else
+    {
+      DEBUG_PRINTLN("WARNING: Failed to set test password");
+    }
+  }
+  else
+  {
+    DEBUG_PRINTLN("WARNING: ZK Auth initialization failed");
+  }
+
   setup_wifi();
   setup_routes();
 
   server_http.begin();
   DEBUG_PRINTLN("HTTP server listening on port 80");
+  DEBUG_PRINTLN("  - ZK Auth UI: http://<ip>/");
+  DEBUG_PRINTLN("  - Tang Server: http://<ip>/tang/adv");
 
   if (!is_active)
   {
-    DEBUG_PRINTLN("Server is INACTIVE. POST to /activate to enable Tang services");
+    DEBUG_PRINTLN("Server is INACTIVE. POST to /tang/activate to enable Tang services");
   }
 }
 
