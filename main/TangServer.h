@@ -22,6 +22,8 @@ static const char *TAG = "TangServer";
 #include "tang_storage.h"
 #include "atecc608a.h"
 #include "tang_handlers.h"
+#include "zk_auth.h"
+#include "zk_handlers.h"
 
 // --- Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
@@ -31,6 +33,7 @@ const char *wifi_password = CONFIG_WIFI_PASSWORD;
 httpd_handle_t server_http = NULL;
 TangKeyStore keystore;
 bool is_active = false;
+ZKAuth zk_auth; // Zero-Knowledge Authentication
 
 // WiFi event group
 static EventGroupHandle_t wifi_event_group;
@@ -336,6 +339,27 @@ void setup()
   std::string y_b64 = Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
   ESP_LOGI(TAG, "Admin Public Key x: %s", x_b64.c_str());
   ESP_LOGI(TAG, "Admin Public Key y: %s", y_b64.c_str());
+
+  // Initialize Zero-Knowledge Authentication
+  DEBUG_PRINTLN("\n\nInitializing Zero-Knowledge Authentication...");
+  if (zk_auth.init())
+  {
+    DEBUG_PRINTLN("ZK Auth initialized successfully");
+
+    // Set test password
+    if (zk_auth.set_password("password"))
+    {
+      DEBUG_PRINTLN("Test password set successfully");
+    }
+    else
+    {
+      DEBUG_PRINTLN("WARNING: Failed to set test password");
+    }
+  }
+  else
+  {
+    DEBUG_PRINTLN("WARNING: ZK Auth initialization failed");
+  }
 
   setup_wifi();
   server_http = setup_http_server();
