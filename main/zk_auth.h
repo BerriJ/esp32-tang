@@ -6,6 +6,7 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/aes.h>
+#include <mbedtls/md.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/pkcs5.h>
 #include <esp_system.h>
@@ -15,6 +16,11 @@
 // Zero-Knowledge Authentication Module
 // Implements Client-Side KDF + ECIES Tunnel for ESP32-C6
 // Format: SHA-256 compatible with ATECC608B
+//
+// Encryption: AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
+// - Provides confidentiality (CBC) + authenticity (HMAC)
+// - Blob format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80 bytes
+// - HMAC verified BEFORE decryption (prevents padding oracle attacks)
 
 class ZKAuth
 {
@@ -345,75 +351,168 @@ public:
       return false;
     }
 
-    // Hash the shared secret with SHA-256 to derive AES key
-    uint8_t aes_key[32];
-    mbedtls_sha256(shared_secret_raw, 32, aes_key, 0);
-
     Serial.print("Shared Secret (raw): ");
     for (int i = 0; i < 32; i++)
       Serial.printf("%02x", shared_secret_raw[i]);
     Serial.println();
 
-    Serial.print("AES Key (SHA-256): ");
+    // Derive separate keys for encryption and authentication
+    // This prevents key reuse vulnerabilities
+    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+    // Encryption key: SHA256("encryption" || shared_secret)
+    uint8_t enc_key[32];
+    mbedtls_md_context_t md_ctx;
+    mbedtls_md_init(&md_ctx);
+    mbedtls_md_setup(&md_ctx, md_info, 0);
+    mbedtls_md_starts(&md_ctx);
+    mbedtls_md_update(&md_ctx, (const uint8_t *)"encryption", 10);
+    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
+    mbedtls_md_finish(&md_ctx, enc_key);
+
+    // MAC key: SHA256("authentication" || shared_secret)
+    uint8_t mac_key[32];
+    mbedtls_md_starts(&md_ctx);
+    mbedtls_md_update(&md_ctx, (const uint8_t *)"authentication", 14);
+    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
+    mbedtls_md_finish(&md_ctx, mac_key);
+    mbedtls_md_free(&md_ctx);
+
+    Serial.print("Encryption Key: ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", aes_key[i]);
+      Serial.printf("%02x", enc_key[i]);
+    Serial.println();
+
+    Serial.print("MAC Key: ");
+    for (int i = 0; i < 32; i++)
+      Serial.printf("%02x", mac_key[i]);
     Serial.println();
 
     // Securely wipe the raw shared secret
     memset(shared_secret_raw, 0, 32);
 
     // Convert encrypted blob from hex
+    // Format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80 bytes
     size_t encrypted_len = strlen(encrypted_blob_hex) / 2;
     uint8_t *encrypted_blob = (uint8_t *)malloc(encrypted_len);
     if (!hex_to_bin(encrypted_blob_hex, encrypted_blob, encrypted_len))
     {
       free(encrypted_blob);
-      memset(aes_key, 0, 32);
+      memset(enc_key, 0, 32);
+      memset(mac_key, 0, 32);
       response = "{\"error\":\"Invalid encrypted blob format\"}";
       return false;
     }
 
-    // Decrypt using AES-256-CBC with zero IV (to match browser)
-    mbedtls_aes_context aes;
-    mbedtls_aes_init(&aes);
-
-    ret = mbedtls_aes_setkey_dec(&aes, aes_key, 256);
-    if (ret != 0)
+    // Verify blob length: IV(16) + Ciphertext(32) + HMAC(32) = 80 bytes
+    if (encrypted_len != 80)
     {
-      mbedtls_aes_free(&aes);
       free(encrypted_blob);
-      memset(aes_key, 0, 32);
-      response = "{\"error\":\"AES init failed\"}";
+      memset(enc_key, 0, 32);
+      memset(mac_key, 0, 32);
+      response = "{\"error\":\"Invalid blob length\"}";
+      Serial.printf("Expected 80 bytes, got %d\n", encrypted_len);
       return false;
     }
 
-    // Zero IV for CBC mode
-    uint8_t iv[16] = {0};
+    // Extract components from blob
+    uint8_t *iv = encrypted_blob;                 // First 16 bytes
+    uint8_t *ciphertext = encrypted_blob + 16;    // Next 32 bytes
+    uint8_t *received_hmac = encrypted_blob + 48; // Last 32 bytes
 
-    // Decrypt using CBC mode
-    uint8_t *decrypted_data = (uint8_t *)malloc(encrypted_len);
-    ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, encrypted_len,
-                                iv, encrypted_blob, decrypted_data);
+    Serial.print("IV: ");
+    for (int i = 0; i < 16; i++)
+      Serial.printf("%02x", iv[i]);
+    Serial.println();
 
+    Serial.print("Received HMAC: ");
+    for (int i = 0; i < 32; i++)
+      Serial.printf("%02x", received_hmac[i]);
+    Serial.println();
+
+    // ⚠️ CRITICAL: Verify HMAC BEFORE decrypting
+    // This prevents padding oracle attacks and ensures data authenticity
+    uint8_t computed_hmac[32];
+    ret = mbedtls_md_hmac(md_info, mac_key, 32, encrypted_blob, 48, computed_hmac);
+
+    if (ret != 0)
+    {
+      free(encrypted_blob);
+      memset(enc_key, 0, 32);
+      memset(mac_key, 0, 32);
+      response = "{\"error\":\"HMAC computation failed\"}";
+      Serial.printf("HMAC computation failed: -0x%04x\n", -ret);
+      return false;
+    }
+
+    Serial.print("Computed HMAC: ");
+    for (int i = 0; i < 32; i++)
+      Serial.printf("%02x", computed_hmac[i]);
+    Serial.println();
+
+    // Constant-time comparison to prevent timing attacks
+    int hmac_result = 0;
+    for (int i = 0; i < 32; i++)
+    {
+      hmac_result |= received_hmac[i] ^ computed_hmac[i];
+    }
+
+    // Wipe MAC key after verification
+    memset(mac_key, 0, 32);
+
+    if (hmac_result != 0)
+    {
+      free(encrypted_blob);
+      memset(enc_key, 0, 32);
+      response = "{\"error\":\"Authentication failed - data tampered or wrong password\"}";
+      Serial.println("❌ HMAC verification FAILED - ciphertext was modified or wrong key!");
+      return false;
+    }
+
+    Serial.println("✅ HMAC verified - data is authentic");
+
+    // Now safe to decrypt (HMAC passed)
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+
+    ret = mbedtls_aes_setkey_dec(&aes, enc_key, 256);
     if (ret != 0)
     {
       mbedtls_aes_free(&aes);
       free(encrypted_blob);
+      memset(enc_key, 0, 32);
+      response = "{\"error\":\"AES init failed\"}";
+      Serial.printf("AES setkey failed: -0x%04x\n", -ret);
+      return false;
+    }
+
+    uint8_t *decrypted_data = (uint8_t *)malloc(32);
+    uint8_t iv_copy[16];
+    memcpy(iv_copy, iv, 16); // CBC mode modifies IV
+
+    ret = mbedtls_aes_crypt_cbc(&aes,
+                                MBEDTLS_AES_DECRYPT,
+                                32,              // data length
+                                iv_copy,         // IV (will be modified)
+                                ciphertext,      // input
+                                decrypted_data); // output
+
+    mbedtls_aes_free(&aes);
+    free(encrypted_blob);
+    memset(enc_key, 0, 32);
+
+    if (ret != 0)
+    {
       free(decrypted_data);
-      memset(aes_key, 0, 32);
       response = "{\"error\":\"Decryption failed\"}";
       Serial.printf("AES decrypt failed: -0x%04x\n", -ret);
       return false;
     }
 
-    mbedtls_aes_free(&aes);
-    free(encrypted_blob);
-    memset(aes_key, 0, 32);
-
     // Extract the derived key (PBKDF2 hash, 32 bytes)
     Serial.println("\n=== DECRYPTED DERIVED KEY ===");
     Serial.print("Key (hex): ");
-    for (size_t i = 0; i < 32 && i < encrypted_len; i++)
+    for (size_t i = 0; i < 32; i++)
     {
       Serial.printf("%02x", decrypted_data[i]);
     }
@@ -442,14 +541,17 @@ public:
     serializeJson(resp_doc, response);
 
     // Securely wipe decrypted data
-    memset(decrypted_data, 0, encrypted_len);
+    memset(decrypted_data, 0, 32);
     free(decrypted_data);
 
     return verification_result;
   }
 
   // Check if device is unlocked
-  bool is_unlocked() const { return unlocked; }
+  bool is_unlocked() const
+  {
+    return unlocked;
+  }
 
   // Lock the device
   void lock() { unlocked = false; }
