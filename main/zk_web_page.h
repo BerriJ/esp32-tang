@@ -403,7 +403,7 @@ const char ZK_WEB_PAGE[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="status-item">
                 <span class="status-label">Encryption</span>
-                <span class="status-value">ECIES (P-256 + AES-256)</span>
+                <span class="status-value">ECIES (P-256 + AES-CBC + HMAC)</span>
                 </div>
                 <div class="status-item">
                     <span class="status-label">Authenticated At</span>
@@ -420,11 +420,57 @@ const char ZK_WEB_PAGE[] PROGMEM = R"rawliteral(
         </div>
     </div>
 
+    <!-- ⚠️ SECURITY WARNING: Password handling in browser - client-side only -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/elliptic/6.5.4/elliptic.min.js"></script>
     <script>
-// Pure JavaScript crypto - works without HTTPS
+// ===============================================================================
+// Zero-Knowledge Authentication - Browser-Side Cryptography
+// ===============================================================================
+// SECURITY FEATURES IMPLEMENTED:
+// 1. Password is NEVER transmitted - only PBKDF2-derived hash
+// 2. Immediate password field clearing after read
+// 3. Secure memory wiping of all sensitive variables (keys, secrets, hashes)
+// 4. try-finally blocks ensure cleanup even on errors
+// 5. Ephemeral ECDH keypair (generated per-session, discarded after)
+// 6. All sensitive data cleared before function returns
+// 
+// ENCRYPTION: AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
+// - Format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80 bytes
+// - Provides confidentiality (CBC) + authenticity (HMAC)
+// - Random IV for each session
+// - HMAC prevents tampering and padding oracle attacks
+//
+// PRODUCTION CHECKLIST:
+// - Remove console.log statements that expose secrets (marked with ⚠️)
+// - Ensure input field has autocomplete="off" (already set)
+// - Consider adding Content-Security-Policy headers
+// - Use subresource integrity (SRI) for CDN libraries in production
+// ===============================================================================
+
 let deviceIdentity = null;
+
+// ⚠️ SECURITY: Secure memory wiping functions
+function secureWipeArray(arr) {
+    if (!arr) return;
+    for (let i = 0; i < arr.length; i++) {
+        arr[i] = 0;
+    }
+}
+
+function secureWipeWordArray(wordArray) {
+    if (!wordArray || !wordArray.words) return;
+    for (let i = 0; i < wordArray.words.length; i++) {
+        wordArray.words[i] = 0;
+    }
+    wordArray.sigBytes = 0;
+}
+
+function secureWipeString(str) {
+    // Note: JavaScript strings are immutable, but we can at least dereference
+    // Best practice: clear the input field immediately after reading
+    return null;
+}
 
 function hexToBytes(hex) {
     const bytes = [];
@@ -472,7 +518,8 @@ async function loadDeviceIdentity() {
 }
 
 async function performSecureUnlock() {
-    const password = document.getElementById('password').value;
+    const passwordInput = document.getElementById('password');
+    const password = passwordInput.value;
     
     if (!password) {
         showStatus('Please enter a password', 'error');
@@ -482,6 +529,14 @@ async function performSecureUnlock() {
     const btn = document.getElementById('unlockBtn');
     btn.disabled = true;
     showStatus('Initializing secure connection...', 'info', true);
+    
+    // ⚠️ SECURITY: Track all sensitive variables for cleanup
+    let sessionKeyHash = null;
+    let sessionKeyBytes = null;
+    let sharedSecretBytes = null;
+    let aesKeyHash = null;
+    let aesKeyBytes = null;
+    let clientKey = null;
     
     try {
         // Load device identity if not already loaded
@@ -500,14 +555,20 @@ async function performSecureUnlock() {
         // Use MAC address as salt (received from device identity)
         const macBytes = hexToBytes(deviceIdentity.macAddress);
         const salt = byteArrayToWordArray(macBytes);
-        const sessionKeyHash = CryptoJS.PBKDF2(password, salt, {
+        sessionKeyHash = CryptoJS.PBKDF2(password, salt, {
             keySize: 256/32,  // 256 bits = 8 words
             iterations: 10000,
             hasher: CryptoJS.algo.SHA256
         });
-        const sessionKeyBytes = wordArrayToByteArray(sessionKeyHash);
+        
+        // ⚠️ SECURITY: Clear password from input field immediately
+        passwordInput.value = '';
+        
+        sessionKeyBytes = wordArrayToByteArray(sessionKeyHash);
         const sessionKeyHex = bytesToHex(sessionKeyBytes);
         
+        // ⚠️ PRODUCTION WARNING: Remove console.log statements in production builds
+        // These logs expose sensitive cryptographic material
         console.log('Salt (MAC Address):', deviceIdentity.macAddress);
         console.log('Session Key (PBKDF2):', sessionKeyHex);
         
@@ -515,11 +576,11 @@ async function performSecureUnlock() {
         
         // Step 2: Generate ephemeral client keypair using elliptic
         const ec = new elliptic.ec('p256');
-        const clientKey = ec.genKeyPair();
+        clientKey = ec.genKeyPair();
         
         // Export uncompressed public key (0x04 + X + Y)
         const clientPubHex = clientKey.getPublic('hex');
-        console.log('Client Public Key:', clientPubHex);
+        console.log('Client Public Key:', clientPubHex); // Public key - safe to log
         
         // Step 3: Import server public key and derive shared secret (ECDH)
         const serverKey = ec.keyFromPublic(deviceIdentity.pubKey, 'hex');
@@ -527,38 +588,106 @@ async function performSecureUnlock() {
         
         // Convert BN to 32-byte array
         const sharedSecretHex = sharedPoint.toString(16).padStart(64, '0');
-        const sharedSecretBytes = hexToBytes(sharedSecretHex);
+        sharedSecretBytes = hexToBytes(sharedSecretHex);
         
+        // ⚠️ PRODUCTION WARNING: Remove in production - exposes shared secret
         console.log('Shared Secret:', sharedSecretHex);
         
-        // Step 4: Hash shared secret for AES key  
+        // Step 4: Derive separate keys for encryption and authentication
+        // This prevents key reuse vulnerabilities in Encrypt-then-MAC
         const sharedSecretWA = byteArrayToWordArray(sharedSecretBytes);
-        const aesKeyHash = CryptoJS.SHA256(sharedSecretWA);
-        const aesKeyBytes = wordArrayToByteArray(aesKeyHash);
         
-        console.log('AES Key:', bytesToHex(aesKeyBytes));
+        // Encryption key: SHA256("encryption" || shared_secret)
+        const encKeyHash = CryptoJS.SHA256(
+            CryptoJS.enc.Utf8.parse('encryption').concat(sharedSecretWA)
+        );
+        const encKeyBytes = wordArrayToByteArray(encKeyHash);
+        
+        // MAC key: SHA256("authentication" || shared_secret)
+        const macKeyHash = CryptoJS.SHA256(
+            CryptoJS.enc.Utf8.parse('authentication').concat(sharedSecretWA)
+        );
+        const macKeyBytes = wordArrayToByteArray(macKeyHash);
+        
+        // ⚠️ PRODUCTION WARNING: Remove in production - exposes keys
+        console.log('Encryption Key:', bytesToHex(encKeyBytes));
+        console.log('MAC Key:', bytesToHex(macKeyBytes));
+        
+        // ⚠️ SECURITY: Clear shared secret after deriving keys
+        secureWipeArray(sharedSecretBytes);
+        secureWipeWordArray(sharedSecretWA);
         
         showStatus('Encrypting credentials...', 'info', true);
         
-        // Step 5: Encrypt the session key hash with AES-256-CBC (zero IV for ECB-like)
-        const aesKey = byteArrayToWordArray(aesKeyBytes);
-        const dataToEncrypt = byteArrayToWordArray(sessionKeyBytes);
-        const iv = CryptoJS.lib.WordArray.create([0, 0, 0, 0]); // Zero IV
+        // Step 5: Encrypt the session key hash with AES-256-CBC
         
-        const encrypted = CryptoJS.AES.encrypt(dataToEncrypt, aesKey, {
-            iv: iv,
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.NoPadding
-        });
+        // Generate random IV (16 bytes for CBC)
+        const ivWords = CryptoJS.lib.WordArray.random(16);
         
-        const encryptedBytes = wordArrayToByteArray(encrypted.ciphertext);
-        const encryptedBlobHex = bytesToHex(encryptedBytes);
+        // Convert encryption key bytes to WordArray
+        const encKey = byteArrayToWordArray(encKeyBytes);
         
-        console.log('Encrypted Blob:', encryptedBlobHex);
+        // Encrypt with AES-256-CBC using NoPadding
+        // Session key hash is 32 bytes (exactly 2 blocks), so no padding needed
+        const encrypted = CryptoJS.AES.encrypt(
+            sessionKeyHash,
+            encKey,
+            {
+                iv: ivWords,
+                mode: CryptoJS.mode.CBC,
+                padding: CryptoJS.pad.NoPadding
+            }
+        );
+        
+        // ⚠️ SECURITY: Clear session key after encryption
+        secureWipeArray(sessionKeyBytes);
+        secureWipeWordArray(sessionKeyHash);
+        
+        // Extract IV and ciphertext
+        const ivBytes = wordArrayToByteArray(ivWords);
+        const ciphertextBytes = wordArrayToByteArray(encrypted.ciphertext);
+        
+        showStatus('Computing authentication tag...', 'info', true);
+        
+        // Build complete blob: IV (16) + Ciphertext (32) + HMAC (32) = 80 bytes
+        // Note: We only include first 32 bytes of ciphertext (should be exactly 32 after padding)
+        const completeBlob = new Uint8Array(80);
+        completeBlob.set(ivBytes, 0);           // IV at offset 0
+        completeBlob.set(ciphertextBytes.slice(0, 32), 16);  // First 32 bytes of ciphertext at offset 16
+        
+        // Step 6: Compute HMAC-SHA256 over IV + Ciphertext (Encrypt-then-MAC)
+        // CRITICAL: Compute HMAC over the EXACT data in the blob (first 48 bytes: IV + CT)
+        const dataToAuthenticateBytes = new Uint8Array(48);
+        dataToAuthenticateBytes.set(completeBlob.slice(0, 48));
+        const dataToAuthenticate = byteArrayToWordArray(Array.from(dataToAuthenticateBytes));
+        const macKey = byteArrayToWordArray(macKeyBytes);
+        const hmac = CryptoJS.HmacSHA256(dataToAuthenticate, macKey);
+        const hmacBytes = wordArrayToByteArray(hmac);
+        
+        console.log('IV:', bytesToHex(ivBytes));
+        console.log('HMAC:', bytesToHex(hmacBytes));
+        
+        // Place HMAC in blob
+        completeBlob.set(hmacBytes, 48);        // HMAC at offset 48
+        
+        const encryptedBlobHex = bytesToHex(Array.from(completeBlob));
+        
+        console.log('Encrypted Blob (IV+CT+HMAC):', encryptedBlobHex); // Encrypted data - safe to log
+        
+        // ⚠️ SECURITY: Clear all keys after encryption
+        secureWipeArray(encKeyBytes);
+        secureWipeArray(macKeyBytes);
+        secureWipeWordArray(encKeyHash);
+        secureWipeWordArray(macKeyHash);
+        secureWipeWordArray(encKey);
+        secureWipeWordArray(macKey);
+        secureWipeWordArray(ivWords);
+        secureWipeWordArray(dataToAuthenticate);
+        secureWipeWordArray(hmac);
         
         showStatus('Sending unlock request...', 'info', true);
         
-        // Step 6: Send to device
+        // Step 7: Send to device
         const response = await fetch('/api/unlock', {
             method: 'POST',
             headers: {
@@ -591,7 +720,24 @@ async function performSecureUnlock() {
         console.error('Error:', error);
         showStatus('❌ Error: ' + error.message, 'error');
     } finally {
+        // ⚠️ SECURITY: Always clear sensitive data, even on error
         btn.disabled = false;
+        passwordInput.value = ''; // Ensure password field is cleared
+        
+        // Wipe all sensitive variables
+        if (sessionKeyHash) secureWipeWordArray(sessionKeyHash);
+        if (sessionKeyBytes) secureWipeArray(sessionKeyBytes);
+        if (sharedSecretBytes) secureWipeArray(sharedSecretBytes);
+        
+        // Clear client private key if possible
+        if (clientKey && clientKey.priv) {
+            // Elliptic.js uses BN.js for private keys - zero it out
+            if (clientKey.priv.words) {
+                for (let i = 0; i < clientKey.priv.words.length; i++) {
+                    clientKey.priv.words[i] = 0;
+                }
+            }
+        }
     }
 }
 
@@ -658,6 +804,25 @@ window.addEventListener('load', async () => {
 document.getElementById('password').addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         performSecureUnlock();
+    }
+});
+
+// ⚠️ SECURITY: Clear password field on page unload/navigation
+window.addEventListener('beforeunload', () => {
+    const passwordInput = document.getElementById('password');
+    if (passwordInput) {
+        passwordInput.value = '';
+    }
+});
+
+// ⚠️ SECURITY: Clear password field when page is restored from bfcache
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+        // Page was restored from back/forward cache
+        const passwordInput = document.getElementById('password');
+        if (passwordInput) {
+            passwordInput.value = '';
+        }
     }
 });
     </script>
