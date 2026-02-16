@@ -497,7 +497,9 @@ async function performSecureUnlock() {
         
         // Step 1: Derive session key using PBKDF2
         // PBKDF2-HMAC-SHA256 with 10000 iterations
-        const salt = CryptoJS.enc.Utf8.parse('ESP32-ZK-Auth'); // Fixed salt for deterministic derivation
+        // Use MAC address as salt (received from device identity)
+        const macBytes = hexToBytes(deviceIdentity.macAddress);
+        const salt = byteArrayToWordArray(macBytes);
         const sessionKeyHash = CryptoJS.PBKDF2(password, salt, {
             keySize: 256/32,  // 256 bits = 8 words
             iterations: 10000,
@@ -506,6 +508,7 @@ async function performSecureUnlock() {
         const sessionKeyBytes = wordArrayToByteArray(sessionKeyHash);
         const sessionKeyHex = bytesToHex(sessionKeyBytes);
         
+        console.log('Salt (MAC Address):', deviceIdentity.macAddress);
         console.log('Session Key (PBKDF2):', sessionKeyHex);
         
         showStatus('Establishing ECIES tunnel...', 'info', true);
