@@ -153,11 +153,22 @@ public:
 
     doc["pubKey"] = pubkey_hex;
 
+    // Get MAC address to use as salt
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char mac_hex[13]; // 6 bytes * 2 + null
+    bin_to_hex(mac, 6, mac_hex);
+    doc["macAddress"] = mac_hex;
+
     serializeJson(doc, json_out);
   }
 
-  // Set the password by storing its PBKDF2 hash
-  // Must match browser: PBKDF2(password, "ESP32-ZK-Auth", 10000, SHA256)
+  // ⚠️ TESTING ONLY - DO NOT USE IN PRODUCTION ⚠️
+  // This function accepts a plaintext password and computes PBKDF2 on the device.
+  // This violates the zero-knowledge principle!
+  // In production, use an activation endpoint that receives the pre-computed hash
+  // from the browser, so the device never sees the plaintext password.
+  // Must match browser: PBKDF2(password, MAC_ADDRESS, 10000, SHA256)
   bool set_password(const char *password)
   {
     if (!initialized)
@@ -166,7 +177,13 @@ public:
       return false;
     }
 
-    const char *salt = "ESP32-ZK-Auth";
+    // ⚠️ TESTING ONLY: Computing PBKDF2 on device
+    // In production, this should be done client-side and only the hash sent to device
+
+    // Use MAC address as salt
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
     mbedtls_md_context_t md_ctx;
     mbedtls_md_init(&md_ctx);
 
@@ -182,9 +199,9 @@ public:
 
     ret = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
                                         (const unsigned char *)password, strlen(password),
-                                        (const unsigned char *)salt, strlen(salt),
-                                        10000, // iterations (must match browser)
-                                        32,    // key length
+                                        mac, 6, // Use MAC address as salt
+                                        10000,  // iterations (must match browser)
+                                        32,     // key length
                                         stored_password_hash);
 
     mbedtls_md_free(&md_ctx);
@@ -198,6 +215,10 @@ public:
     password_set = true;
 
     Serial.println("\n=== Password Set ===");
+    Serial.print("Salt (MAC Address): ");
+    for (int i = 0; i < 6; i++)
+      Serial.printf("%02x", mac[i]);
+    Serial.println();
     Serial.print("Stored PBKDF2 Hash: ");
     for (int i = 0; i < 32; i++)
       Serial.printf("%02x", stored_password_hash[i]);
