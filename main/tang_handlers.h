@@ -198,6 +198,27 @@ static esp_err_t handle_rec(httpd_req_t *req)
 
 // --- Administration Handlers ---
 
+// GET /config - Get ATECC608B configuration
+static esp_err_t handle_config(httpd_req_t *req)
+{
+  ESP_LOGI(TAG_HANDLERS, "Serving ATECC608B config");
+
+  char *json_str = atecc608B_get_config_json();
+
+  if (!json_str)
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Config data not available");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json_str);
+  free(json_str);
+
+  ESP_LOGI(TAG_HANDLERS, "Served /config");
+  return ESP_OK;
+}
+
 // GET /pub - Get admin public key
 static esp_err_t handle_pub(httpd_req_t *req)
 {

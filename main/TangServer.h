@@ -20,8 +20,8 @@ static const char *TAG = "TangServer";
 #include "encoding.h"
 #include "jwe.h"
 #include "tang_storage.h"
-#include "tang_handlers.h"
 #include "atecc608a.h"
+#include "tang_handlers.h"
 
 // --- Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
@@ -201,6 +201,7 @@ httpd_handle_t setup_http_server()
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
   config.stack_size = 8192;
+  config.max_uri_handlers = 12; // Increase from default 8 to accommodate all handlers
 
   httpd_handle_t server = NULL;
 
@@ -234,6 +235,13 @@ httpd_handle_t setup_http_server()
         .handler = handle_pub,
         .user_ctx = NULL};
     httpd_register_uri_handler(server, &pub_uri);
+
+    httpd_uri_t config_uri = {
+        .uri = "/config",
+        .method = HTTP_GET,
+        .handler = handle_config,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &config_uri);
 
     httpd_uri_t activate_uri = {
         .uri = "/activate",
