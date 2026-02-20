@@ -152,7 +152,7 @@ public:
   }
 
   // Get device identity (for /api/identity endpoint)
-  char* get_identity_json()
+  char *get_identity_json()
   {
     char pubkey_hex[131]; // 65 bytes * 2 + null
     bin_to_hex(device_public_key, 65, pubkey_hex);
@@ -262,7 +262,7 @@ public:
   }
 
   // Process unlock request with ECIES tunnel
-  char* process_unlock(const char *json_payload, bool *success_out)
+  char *process_unlock(const char *json_payload, bool *success_out)
   {
     *success_out = false;
 
@@ -285,10 +285,10 @@ public:
 
     cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
     cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
-    
+
     const char *client_pub_hex = NULL;
     const char *encrypted_blob_hex = NULL;
-    
+
     if (cJSON_IsString(client_pub_item))
       client_pub_hex = client_pub_item->valuestring;
     if (cJSON_IsString(encrypted_blob_item))
