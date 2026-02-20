@@ -1,97 +1,165 @@
 #ifndef ZK_HANDLERS_H
 #define ZK_HANDLERS_H
 
-#include <WebServer.h>
+#include <esp_http_server.h>
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <string.h>
 #include "zk_auth.h"
 #include "zk_web_page.h"
 
+static const char *TAG_ZK = "zk_handlers";
+
 // Global ZK Auth instance (to be initialized in main)
 extern ZKAuth zk_auth;
-extern WebServer server_http;
+extern httpd_handle_t server_http;
 
 // Serve the main web interface
-void handle_zk_root()
+static esp_err_t handle_zk_root(httpd_req_t *req)
 {
-  // Server decides what page to show based on unlock state
-  // This way incognito/new windows always get the correct page
-  server_http.send(200, "text/html", ZK_WEB_PAGE);
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_sendstr(req, ZK_WEB_PAGE);
+  return ESP_OK;
 }
 
 // API endpoint: Get device identity
-void handle_zk_identity()
+static esp_err_t handle_zk_identity(httpd_req_t *req)
 {
-  String json_response;
-  zk_auth.get_identity_json(json_response);
+  char *json_response = zk_auth.get_identity_json();
+  if (json_response == NULL)
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get identity");
+    return ESP_FAIL;
+  }
 
-  server_http.sendHeader("Access-Control-Allow-Origin", "*");
-  server_http.send(200, "application/json", json_response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, json_response);
+  free(json_response);
+  return ESP_OK;
 }
 
 // API endpoint: Process unlock request
-void handle_zk_unlock()
+static esp_err_t handle_zk_unlock(httpd_req_t *req)
 {
-  if (server_http.method() != HTTP_POST)
+  // Read POST body
+  char content[1024];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0)
   {
-    server_http.send(405, "application/json", "{\"error\":\"Method not allowed\"}");
-    return;
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT)
+    {
+      httpd_resp_send_408(req);
+    }
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  bool success = false;
+  char *response = zk_auth.process_unlock(content, &success);
+
+  if (response == NULL)
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
+    return ESP_FAIL;
   }
 
-  String payload = server_http.arg("plain");
-  String response;
-
-  bool success = zk_auth.process_unlock(payload.c_str(), response);
-
-  int status_code = success ? 200 : 400;
-  server_http.sendHeader("Access-Control-Allow-Origin", "*");
-  server_http.send(status_code, "application/json", response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
+  httpd_resp_sendstr(req, response);
+  free(response);
+  return ESP_OK;
 }
 
 // API endpoint: Check session status
-void handle_zk_status()
+static esp_err_t handle_zk_status(httpd_req_t *req)
 {
-  unsigned long uptime_ms = millis();
-  String response = "{\"unlocked\":";
-  response += zk_auth.is_unlocked() ? "true" : "false";
-  response += ",\"uptime\":";
-  response += String(uptime_ms);
-  response += "}";
-  server_http.sendHeader("Access-Control-Allow-Origin", "*");
-  server_http.send(200, "application/json", response);
+  unsigned long uptime_ms = esp_timer_get_time() / 1000;
+  char response[128];
+  snprintf(response, sizeof(response), "{\"unlocked\":%s,\"uptime\":%lu}",
+           zk_auth.is_unlocked() ? "true" : "false", uptime_ms);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, response);
+  return ESP_OK;
 }
 
 // API endpoint: Lock the device
-void handle_zk_lock()
+static esp_err_t handle_zk_lock(httpd_req_t *req)
 {
   zk_auth.lock();
-  server_http.sendHeader("Access-Control-Allow-Origin", "*");
-  server_http.send(200, "application/json", "{\"unlocked\":false}");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, "{\"unlocked\":false}");
+  return ESP_OK;
 }
 
 // Handle CORS preflight
-void handle_zk_options()
+static esp_err_t handle_zk_options(httpd_req_t *req)
 {
-  server_http.sendHeader("Access-Control-Allow-Origin", "*");
-  server_http.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  server_http.sendHeader("Access-Control-Allow-Headers", "Content-Type");
-  server_http.send(204);
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+  httpd_resp_set_status(req, "204 No Content");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
 }
 
-// Register all ZK auth routes
-void setup_zk_routes()
+// Register all ZK auth routes to the HTTP server
+void register_zk_handlers(httpd_handle_t server)
 {
-  // Move Tang server to port 8080 (or different path)
-  // Main interface on port 80 for ZK auth
-  server_http.on("/", HTTP_GET, handle_zk_root);
-  server_http.on("/api/identity", HTTP_GET, handle_zk_identity);
-  server_http.on("/api/status", HTTP_GET, handle_zk_status);
-  server_http.on("/api/unlock", HTTP_POST, handle_zk_unlock);
-  server_http.on("/api/unlock", HTTP_OPTIONS, handle_zk_options);
-  server_http.on("/api/lock", HTTP_POST, handle_zk_lock);
+  // Root handler for ZK web interface
+  httpd_uri_t root_uri = {
+      .uri = "/",
+      .method = HTTP_GET,
+      .handler = handle_zk_root,
+      .user_ctx = NULL};
+  httpd_register_uri_handler(server, &root_uri);
 
-  Serial.println("ZK Auth routes registered:");
-  Serial.println("  GET  /            - Web interface");
-  Serial.println("  GET  /api/identity - Device identity");
-  Serial.println("  POST /api/unlock   - Unlock request");
+  // API endpoints
+  httpd_uri_t identity_uri = {
+      .uri = "/api/identity",
+      .method = HTTP_GET,
+      .handler = handle_zk_identity,
+      .user_ctx = NULL};
+  httpd_register_uri_handler(server, &identity_uri);
+
+  httpd_uri_t status_uri = {
+      .uri = "/api/status",
+      .method = HTTP_GET,
+      .handler = handle_zk_status,
+      .user_ctx = NULL};
+  httpd_register_uri_handler(server, &status_uri);
+
+  httpd_uri_t unlock_uri = {
+      .uri = "/api/unlock",
+      .method = HTTP_POST,
+      .handler = handle_zk_unlock,
+      .user_ctx = NULL};
+  httpd_register_uri_handler(server, &unlock_uri);
+
+  httpd_uri_t unlock_options_uri = {
+      .uri = "/api/unlock",
+      .method = HTTP_OPTIONS,
+      .handler = handle_zk_options,
+      .user_ctx = NULL};
+  httpd_register_uri_handler(server, &unlock_options_uri);
+
+  httpd_uri_t lock_uri = {
+      .uri = "/api/lock",
+      .method = HTTP_POST,
+      .handler = handle_zk_lock,
+      .user_ctx = NULL};
+  httpd_register_uri_handler(server, &lock_uri);
+
+  ESP_LOGI(TAG_ZK, "ZK Auth routes registered:");
+  ESP_LOGI(TAG_ZK, "  GET  /             - Web interface");
+  ESP_LOGI(TAG_ZK, "  GET  /api/identity - Device identity");
+  ESP_LOGI(TAG_ZK, "  GET  /api/status   - Session status");
+  ESP_LOGI(TAG_ZK, "  POST /api/unlock   - Unlock request");
+  ESP_LOGI(TAG_ZK, "  POST /api/lock     - Lock device");
 }
 
 #endif // ZK_HANDLERS_H

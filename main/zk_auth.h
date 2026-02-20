@@ -11,7 +11,9 @@
 #include <mbedtls/pkcs5.h>
 #include <esp_system.h>
 #include <esp_mac.h>
-#include <ArduinoJson.h>
+#include <cJSON.h>
+#include <string.h>
+#include <stdio.h>
 
 // Zero-Knowledge Authentication Module
 // Implements Client-Side KDF + ECIES Tunnel for ESP32-C6
@@ -97,7 +99,7 @@ public:
                                     strlen(pers));
     if (ret != 0)
     {
-      Serial.printf("mbedtls_ctr_drbg_seed failed: -0x%04x\n", -ret);
+      printf("mbedtls_ctr_drbg_seed failed: -0x%04x\n", -ret);
       return false;
     }
 
@@ -105,7 +107,7 @@ public:
     ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret != 0)
     {
-      Serial.printf("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
+      printf("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
       return false;
     }
 
@@ -117,7 +119,7 @@ public:
                                   &ctr_drbg);
     if (ret != 0)
     {
-      Serial.printf("mbedtls_ecdh_gen_public failed: -0x%04x\n", -ret);
+      printf("mbedtls_ecdh_gen_public failed: -0x%04x\n", -ret);
       return false;
     }
 
@@ -131,42 +133,43 @@ public:
                                          sizeof(device_public_key));
     if (ret != 0 || olen != 65)
     {
-      Serial.printf("mbedtls_ecp_point_write_binary failed: -0x%04x\n", -ret);
+      printf("mbedtls_ecp_point_write_binary failed: -0x%04x\n", -ret);
       return false;
     }
 
     initialized = true;
 
-    Serial.println("\n=== ZK Authentication Initialized ===");
-    Serial.print("Public Key: ");
+    printf("\n=== ZK Authentication Initialized ===\n");
+    printf("Public Key: ");
     for (int i = 0; i < 65; i++)
     {
-      Serial.printf("%02x", device_public_key[i]);
+      printf("%02x", device_public_key[i]);
     }
-    Serial.println();
-    Serial.println("=====================================\n");
+    printf("\n");
+    printf("=====================================\n\n");
 
     return true;
   }
 
   // Get device identity (for /api/identity endpoint)
-  void get_identity_json(String &json_out)
+  char* get_identity_json()
   {
-    StaticJsonDocument<512> doc;
-
     char pubkey_hex[131]; // 65 bytes * 2 + null
     bin_to_hex(device_public_key, 65, pubkey_hex);
-
-    doc["pubKey"] = pubkey_hex;
 
     // Get MAC address to use as salt
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     char mac_hex[13]; // 6 bytes * 2 + null
     bin_to_hex(mac, 6, mac_hex);
-    doc["macAddress"] = mac_hex;
 
-    serializeJson(doc, json_out);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "pubKey", pubkey_hex);
+    cJSON_AddStringToObject(root, "macAddress", mac_hex);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
   }
 
   // ⚠️ TESTING ONLY - DO NOT USE IN PRODUCTION ⚠️
@@ -179,7 +182,7 @@ public:
   {
     if (!initialized)
     {
-      Serial.println("ZKAuth not initialized");
+      printf("ZKAuth not initialized\n");
       return false;
     }
 
@@ -199,7 +202,7 @@ public:
     if (ret != 0)
     {
       mbedtls_md_free(&md_ctx);
-      Serial.printf("mbedtls_md_setup failed: -0x%04x\n", -ret);
+      printf("mbedtls_md_setup failed: -0x%04x\n", -ret);
       return false;
     }
 
@@ -214,21 +217,21 @@ public:
 
     if (ret != 0)
     {
-      Serial.printf("mbedtls_pkcs5_pbkdf2_hmac_ext failed: -0x%04x\n", -ret);
+      printf("mbedtls_pkcs5_pbkdf2_hmac_ext failed: -0x%04x\n", -ret);
       return false;
     }
 
     password_set = true;
 
-    Serial.println("\n=== Password Set ===");
-    Serial.print("Salt (MAC Address): ");
+    printf("\n=== Password Set ===\n");
+    printf("Salt (MAC Address): ");
     for (int i = 0; i < 6; i++)
-      Serial.printf("%02x", mac[i]);
-    Serial.println();
-    Serial.print("Stored PBKDF2 Hash: ");
+      printf("%02x", mac[i]);
+    printf("\n");
+    printf("Stored PBKDF2 Hash: ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", stored_password_hash[i]);
-    Serial.println("\n===================\n");
+      printf("%02x", stored_password_hash[i]);
+    printf("\n===================\n\n");
 
     return true;
   }
@@ -238,13 +241,13 @@ public:
   {
     if (!password_set)
     {
-      Serial.println("No password set for verification");
+      printf("No password set for verification\n");
       return false;
     }
 
     if (key_len != 32)
     {
-      Serial.println("Invalid key length");
+      printf("Invalid key length\n");
       return false;
     }
 
@@ -259,37 +262,47 @@ public:
   }
 
   // Process unlock request with ECIES tunnel
-  bool process_unlock(const char *json_payload, String &response)
+  char* process_unlock(const char *json_payload, bool *success_out)
   {
+    *success_out = false;
+
     if (!initialized)
     {
-      response = "{\"error\":\"Not initialized\"}";
-      return false;
+      return strdup("{\"error\":\"Not initialized\"}");
     }
 
     // Parse JSON
-    StaticJsonDocument<1024> doc;
-    DeserializationError error = deserializeJson(doc, json_payload);
-
-    if (error)
+    cJSON *doc = cJSON_Parse(json_payload);
+    if (doc == NULL)
     {
-      response = "{\"error\":\"Invalid JSON\"}";
-      Serial.printf("JSON parse error: %s\n", error.c_str());
-      return false;
+      const char *error_ptr = cJSON_GetErrorPtr();
+      if (error_ptr != NULL)
+      {
+        printf("JSON parse error before: %s\n", error_ptr);
+      }
+      return strdup("{\"error\":\"Invalid JSON\"}");
     }
 
-    const char *client_pub_hex = doc["clientPub"];
-    const char *encrypted_blob_hex = doc["blob"];
+    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
+    cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
+    
+    const char *client_pub_hex = NULL;
+    const char *encrypted_blob_hex = NULL;
+    
+    if (cJSON_IsString(client_pub_item))
+      client_pub_hex = client_pub_item->valuestring;
+    if (cJSON_IsString(encrypted_blob_item))
+      encrypted_blob_hex = encrypted_blob_item->valuestring;
 
     if (!client_pub_hex || !encrypted_blob_hex)
     {
-      response = "{\"error\":\"Missing required fields\"}";
-      return false;
+      cJSON_Delete(doc);
+      return strdup("{\"error\":\"Missing required fields\"}");
     }
 
-    Serial.println("\n=== Processing Unlock Request ===");
-    Serial.printf("Client Public Key: %s\n", client_pub_hex);
-    Serial.printf("Encrypted Blob: %s\n", encrypted_blob_hex);
+    printf("\n=== Processing Unlock Request ===\n");
+    printf("Client Public Key: %s\n", client_pub_hex);
+    printf("Encrypted Blob: %s\n", encrypted_blob_hex);
 
     // Convert client public key from hex
     size_t client_pub_len = strlen(client_pub_hex) / 2;
@@ -297,8 +310,8 @@ public:
     if (!hex_to_bin(client_pub_hex, client_pub_bin, client_pub_len))
     {
       free(client_pub_bin);
-      response = "{\"error\":\"Invalid client public key format\"}";
-      return false;
+      cJSON_Delete(doc);
+      return strdup("{\"error\":\"Invalid client public key format\"}");
     }
 
     // Parse client public key point
@@ -314,9 +327,9 @@ public:
     if (ret != 0)
     {
       mbedtls_ecp_point_free(&client_point);
-      response = "{\"error\":\"Invalid client public key\"}";
-      Serial.printf("Failed to parse client key: -0x%04x\n", -ret);
-      return false;
+      cJSON_Delete(doc);
+      printf("Failed to parse client key: -0x%04x\n", -ret);
+      return strdup("{\"error\":\"Invalid client public key\"}");
     }
 
     // Compute shared secret using ECDH
@@ -335,9 +348,9 @@ public:
     if (ret != 0)
     {
       mbedtls_mpi_free(&shared_secret_mpi);
-      response = "{\"error\":\"ECDH failed\"}";
-      Serial.printf("ECDH computation failed: -0x%04x\n", -ret);
-      return false;
+      cJSON_Delete(doc);
+      printf("ECDH computation failed: -0x%04x\n", -ret);
+      return strdup("{\"error\":\"ECDH failed\"}");
     }
 
     // Export shared secret to binary
@@ -347,14 +360,15 @@ public:
 
     if (ret != 0)
     {
-      response = "{\"error\":\"Failed to export shared secret\"}";
-      return false;
+      cJSON_Delete(doc);
+      printf("Shared secret export failed: -0x%04x\n", -ret);
+      return strdup("{\"error\":\"Shared secret export failed\"}");
     }
 
-    Serial.print("Shared Secret (raw): ");
+    printf("Shared Secret (raw): ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", shared_secret_raw[i]);
-    Serial.println();
+      printf("%02x", shared_secret_raw[i]);
+    printf("\n");
 
     // Derive separate keys for encryption and authentication
     // This prevents key reuse vulnerabilities
@@ -378,15 +392,15 @@ public:
     mbedtls_md_finish(&md_ctx, mac_key);
     mbedtls_md_free(&md_ctx);
 
-    Serial.print("Encryption Key: ");
+    printf("Encryption Key: ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", enc_key[i]);
-    Serial.println();
+      printf("%02x", enc_key[i]);
+    printf("\n");
 
-    Serial.print("MAC Key: ");
+    printf("MAC Key: ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", mac_key[i]);
-    Serial.println();
+      printf("%02x", mac_key[i]);
+    printf("\n");
 
     // Securely wipe the raw shared secret
     memset(shared_secret_raw, 0, 32);
@@ -400,8 +414,8 @@ public:
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       memset(mac_key, 0, 32);
-      response = "{\"error\":\"Invalid encrypted blob format\"}";
-      return false;
+      cJSON_Delete(doc);
+      return strdup("{\"error\":\"Invalid blob format\"}");
     }
 
     // Verify blob length: IV(16) + Ciphertext(32) + HMAC(32) = 80 bytes
@@ -410,9 +424,9 @@ public:
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       memset(mac_key, 0, 32);
-      response = "{\"error\":\"Invalid blob length\"}";
-      Serial.printf("Expected 80 bytes, got %d\n", encrypted_len);
-      return false;
+      cJSON_Delete(doc);
+      printf("Expected 80 bytes, got %d\n", encrypted_len);
+      return strdup("{\"error\":\"Invalid blob length\"}");
     }
 
     // Extract components from blob
@@ -420,15 +434,15 @@ public:
     uint8_t *ciphertext = encrypted_blob + 16;    // Next 32 bytes
     uint8_t *received_hmac = encrypted_blob + 48; // Last 32 bytes
 
-    Serial.print("IV: ");
+    printf("IV: ");
     for (int i = 0; i < 16; i++)
-      Serial.printf("%02x", iv[i]);
-    Serial.println();
+      printf("%02x", iv[i]);
+    printf("\n");
 
-    Serial.print("Received HMAC: ");
+    printf("Received HMAC: ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", received_hmac[i]);
-    Serial.println();
+      printf("%02x", received_hmac[i]);
+    printf("\n");
 
     // ⚠️ CRITICAL: Verify HMAC BEFORE decrypting
     // This prevents padding oracle attacks and ensures data authenticity
@@ -440,15 +454,15 @@ public:
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       memset(mac_key, 0, 32);
-      response = "{\"error\":\"HMAC computation failed\"}";
-      Serial.printf("HMAC computation failed: -0x%04x\n", -ret);
-      return false;
+      cJSON_Delete(doc);
+      printf("HMAC computation failed: -0x%04x\n", -ret);
+      return strdup("{\"error\":\"HMAC computation failed\"}");
     }
 
-    Serial.print("Computed HMAC: ");
+    printf("Computed HMAC: ");
     for (int i = 0; i < 32; i++)
-      Serial.printf("%02x", computed_hmac[i]);
-    Serial.println();
+      printf("%02x", computed_hmac[i]);
+    printf("\n");
 
     // Constant-time comparison to prevent timing attacks
     int hmac_result = 0;
@@ -464,12 +478,12 @@ public:
     {
       free(encrypted_blob);
       memset(enc_key, 0, 32);
-      response = "{\"error\":\"Authentication failed - data tampered or wrong password\"}";
-      Serial.println("❌ HMAC verification FAILED - ciphertext was modified or wrong key!");
-      return false;
+      cJSON_Delete(doc);
+      printf("❌ HMAC verification FAILED - ciphertext was modified or wrong key!\n");
+      return strdup("{\"error\":\"Authentication failed - data tampered or wrong password\"}");
     }
 
-    Serial.println("✅ HMAC verified - data is authentic");
+    printf("✅ HMAC verified - data is authentic\n");
 
     // Now safe to decrypt (HMAC passed)
     mbedtls_aes_context aes;
@@ -481,9 +495,9 @@ public:
       mbedtls_aes_free(&aes);
       free(encrypted_blob);
       memset(enc_key, 0, 32);
-      response = "{\"error\":\"AES init failed\"}";
-      Serial.printf("AES setkey failed: -0x%04x\n", -ret);
-      return false;
+      cJSON_Delete(doc);
+      printf("AES setkey failed: -0x%04x\n", -ret);
+      return strdup("{\"error\":\"AES setup failed\"}");
     }
 
     uint8_t *decrypted_data = (uint8_t *)malloc(32);
@@ -504,47 +518,50 @@ public:
     if (ret != 0)
     {
       free(decrypted_data);
-      response = "{\"error\":\"Decryption failed\"}";
-      Serial.printf("AES decrypt failed: -0x%04x\n", -ret);
-      return false;
+      cJSON_Delete(doc);
+      printf("AES decrypt failed: -0x%04x\n", -ret);
+      return strdup("{\"error\":\"Decryption failed\"}");
     }
 
     // Extract the derived key (PBKDF2 hash, 32 bytes)
-    Serial.println("\n=== DECRYPTED DERIVED KEY ===");
-    Serial.print("Key (hex): ");
+    printf("\n=== DECRYPTED DERIVED KEY ===\n");
+    printf("Key (hex): ");
     for (size_t i = 0; i < 32; i++)
     {
-      Serial.printf("%02x", decrypted_data[i]);
+      printf("%02x", decrypted_data[i]);
     }
-    Serial.println();
-    Serial.println("=============================\n");
+    printf("\n");
+    printf("=============================\n\n");
 
     // Verify the decrypted key against stored password hash
     bool verification_result = verify_key(decrypted_data, 32);
 
-    StaticJsonDocument<256> resp_doc;
+    cJSON *resp_doc = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp_doc, "success", verification_result);
 
     if (verification_result)
     {
-      Serial.println("✅ Password verification SUCCESSFUL");
-      unlocked = true; // Set unlocked state
-      resp_doc["success"] = true;
-      resp_doc["message"] = "Unlock successful";
+      printf("✅ Password verification SUCCESSFUL\n");
+      unlocked = true;
+      cJSON_AddStringToObject(resp_doc, "message", "Unlock successful");
     }
     else
     {
-      Serial.println("❌ Password verification FAILED");
-      resp_doc["success"] = false;
-      resp_doc["error"] = "Invalid password";
+      printf("❌ Password verification FAILED\n");
+      unlocked = false;
+      cJSON_AddStringToObject(resp_doc, "error", "Invalid password");
     }
 
-    serializeJson(resp_doc, response);
+    char *response_str = cJSON_PrintUnformatted(resp_doc);
+    cJSON_Delete(resp_doc);
+    cJSON_Delete(doc);
 
     // Securely wipe decrypted data
     memset(decrypted_data, 0, 32);
     free(decrypted_data);
 
-    return verification_result;
+    *success_out = verification_result;
+    return response_str;
   }
 
   // Check if device is unlocked

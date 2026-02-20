@@ -4,7 +4,7 @@
 // Embedded web interface for Zero-Knowledge Authentication
 // Includes: HTML, CSS, JavaScript, and crypto libraries (elliptic.js, CryptoJS)
 
-const char ZK_WEB_PAGE[] PROGMEM = R"rawliteral(
+const char ZK_WEB_PAGE[] = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>

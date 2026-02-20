@@ -204,13 +204,16 @@ httpd_handle_t setup_http_server()
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
   config.stack_size = 8192;
-  config.max_uri_handlers = 12; // Increase from default 8 to accommodate all handlers
+  config.max_uri_handlers = 16; // Increased to accommodate all handlers including ZK
 
   httpd_handle_t server = NULL;
 
   if (httpd_start(&server, &config) == ESP_OK)
   {
-    // Register URI handlers
+    // Register ZK authentication handlers (including root "/" handler)
+    register_zk_handlers(server);
+
+    // Register Tang protocol handlers
     httpd_uri_t adv_uri = {
         .uri = "/adv",
         .method = HTTP_GET,
@@ -341,28 +344,35 @@ void setup()
   ESP_LOGI(TAG, "Admin Public Key y: %s", y_b64.c_str());
 
   // Initialize Zero-Knowledge Authentication
-  DEBUG_PRINTLN("\n\nInitializing Zero-Knowledge Authentication...");
+  ESP_LOGI(TAG, "Initializing Zero-Knowledge Authentication...");
   if (zk_auth.init())
   {
-    DEBUG_PRINTLN("ZK Auth initialized successfully");
+    ESP_LOGI(TAG, "ZK Auth initialized successfully");
 
     // Set test password
     if (zk_auth.set_password("password"))
     {
-      DEBUG_PRINTLN("Test password set successfully");
+      ESP_LOGI(TAG, "Test password set successfully");
     }
     else
     {
-      DEBUG_PRINTLN("WARNING: Failed to set test password");
+      ESP_LOGW(TAG, "Failed to set test password");
     }
   }
   else
   {
-    DEBUG_PRINTLN("WARNING: ZK Auth initialization failed");
+    ESP_LOGW(TAG, "ZK Auth initialization failed");
   }
 
   setup_wifi();
   server_http = setup_http_server();
+
+  if (server_http)
+  {
+    ESP_LOGI(TAG, "HTTP server listening on port 80");
+    ESP_LOGI(TAG, "  - ZK Auth UI: http://<ip>/");
+    ESP_LOGI(TAG, "  - Tang Server: http://<ip>/adv");
+  }
 
   if (!is_active)
   {
