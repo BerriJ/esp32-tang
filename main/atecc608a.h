@@ -1,38 +1,39 @@
-#ifndef ATECC608A_H
-#define ATECC608A_H
+#ifndef ATECC608B_H
+#define ATECC608B_H
 
 #include <Arduino.h>
 #include "cryptoauthlib.h"
+#include "sdkconfig.h"
 
-// ATECC608A Configuration
-#define ATECC608A_SDA_PIN 17
-#define ATECC608A_SCL_PIN 16
-#define ATECC608A_I2C_ADDR 0xC0   // 8-bit I2C address (7-bit 0x60 << 1)
-#define ATECC608A_I2C_FREQ 100000 // 100kHz
+// ATECC608B Configuration
+// Note: I2C pins are configured via sdkconfig (CONFIG_ATCA_I2C_SDA_PIN, CONFIG_ATCA_I2C_SCL_PIN)
+// These are used by the cryptoauthlib HAL layer
+#define ATECC608B_I2C_ADDR CONFIG_ATCA_I2C_ADDRESS
+#define ATECC608B_I2C_FREQ CONFIG_ATCA_I2C_BAUD_RATE
 
 // Global ATCA configuration
 ATCAIfaceCfg atecc_cfg;
 cryptoauthlib
 
     /**
-     * Initialize I2C and ATECC608A
+     * Initialize I2C and ATECC608B
      */
     bool
-    atecc608a_init()
+    atecc608B_init()
 {
-  Serial.println("\n=== ATECC608A Initialization ===");
+  Serial.println("\n=== ATECC608B Initialization ===");
 
-  // Configure cryptoauthlib for ATECC608A - it will handle I2C initialization
+  // Configure cryptoauthlib for ATECC608B - it will handle I2C initialization
   atecc_cfg.iface_type = ATCA_I2C_IFACE;
-  atecc_cfg.devtype = ATECC608;
-  atecc_cfg.atcai2c.address = ATECC608A_I2C_ADDR;
+  atecc_cfg.devtype = ATECC608B;
+  atecc_cfg.atcai2c.address = ATECC608B_I2C_ADDR;
   atecc_cfg.atcai2c.bus = 0; // I2C bus number
-  atecc_cfg.atcai2c.baud = ATECC608A_I2C_FREQ;
+  atecc_cfg.atcai2c.baud = ATECC608B_I2C_FREQ;
   atecc_cfg.wake_delay = 1500;
   atecc_cfg.rx_retries = 20;
 
-  Serial.printf("Configuring ATECC608A: SDA=GPIO%d, SCL=GPIO%d, Address=0x%02X (7-bit: 0x%02X)\n",
-                ATECC608A_SDA_PIN, ATECC608A_SCL_PIN, ATECC608A_I2C_ADDR, ATECC608A_I2C_ADDR >> 1);
+  Serial.printf("Configuring ATECC608B: SDA=GPIO%d, SCL=GPIO%d, Address=0x%02X (7-bit: 0x%02X)\n",
+                CONFIG_ATCA_I2C_SDA_PIN, CONFIG_ATCA_I2C_SCL_PIN, ATECC608B_I2C_ADDR, ATECC608B_I2C_ADDR >> 1);
 
   // Initialize cryptoauthlib (it will initialize I2C internally)
   ATCA_STATUS status = atcab_init(&atecc_cfg);
@@ -42,7 +43,7 @@ cryptoauthlib
     return false;
   }
 
-  Serial.println("ATECC608A initialized successfully");
+  Serial.println("ATECC608B initialized successfully");
 
   // Give the device a moment to stabilize
   delay(100);
@@ -63,11 +64,11 @@ cryptoauthlib
 }
 
 /**
- * Print ATECC608A configuration zone to console
+ * Print ATECC608B configuration zone to console
  */
-void atecc608a_print_config()
+void atecc608B_print_config()
 {
-  Serial.println("\n=== ATECC608A Configuration ===");
+  Serial.println("\n=== ATECC608B Configuration ===");
 
   // First, try to read the serial number as a simple communication test
   uint8_t serial_number[9];
@@ -195,15 +196,15 @@ void atecc608a_print_config()
   Serial.printf("  Data/OTP Zone Lock: 0x%02X %s\n", config_data[86],
                 config_data[86] == 0x00 ? "[LOCKED]" : "[UNLOCKED]");
 
-  Serial.println("\n=== End of ATECC608A Configuration ===\n");
+  Serial.println("\n=== End of ATECC608B Configuration ===\n");
 }
 
 /**
- * Release ATECC608A resources
+ * Release ATECC608B resources
  */
-void atecc608a_release()
+void atecc608B_release()
 {
   atcab_release();
 }
 
-#endif // ATECC608A_H
+#endif // ATECC608B_H
