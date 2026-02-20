@@ -2,3 +2,5 @@
 dependencies:
   idf:
     version: ">=4.1.0"
+  esp-cryptoauthlib:
+    git: https://github.com/espressif/esp-cryptoauthlib.git
