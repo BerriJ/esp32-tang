@@ -15,7 +15,7 @@ static const char *TAG_STORAGE = "tang_storage";
 class TangKeyStore
 {
 private:
-  uint8_t salt[SALT_SIZE];
+  // No longer need salt for password-based encryption
 
 public:
   // Tang server keys (encrypted at rest, decrypted in memory when active)
@@ -62,9 +62,6 @@ public:
     if (success)
     {
       P521::compute_public_key(admin_priv, admin_pub);
-
-      len = SALT_SIZE;
-      nvs_get_blob(handle, "salt", salt, &len);
     }
 
     nvs_close(handle);
@@ -81,15 +78,6 @@ public:
       return false;
     }
 
-    // Generate and save salt
-    esp_fill_random(salt, SALT_SIZE);
-    err = nvs_set_blob(handle, "salt", salt, SALT_SIZE);
-    if (err != ESP_OK)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
     // Save admin key
     err = nvs_set_blob(handle, "admin_key", admin_priv, P521_PRIVATE_KEY_SIZE);
     if (err != ESP_OK)
@@ -103,7 +91,8 @@ public:
     return (err == ESP_OK);
   }
 
-  bool encrypt_and_save_tang_keys(const char *password)
+  // Save Tang keys directly to NVS (no encryption)
+  bool save_tang_keys()
   {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
@@ -113,59 +102,16 @@ public:
       return false;
     }
 
-    // Derive key and encrypt signing key
-    uint8_t encrypted_sig[P521_PRIVATE_KEY_SIZE];
-    uint8_t sig_tag[GCM_TAG_SIZE];
-    memcpy(encrypted_sig, sig_priv, P521_PRIVATE_KEY_SIZE);
-
-    uint8_t key[16], iv[12] = {0};
-    if (PBKDF2::derive_key(key, sizeof(key), password, salt, SALT_SIZE, PBKDF2_ITERATIONS) != 0)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    if (!AESGCM::encrypt(encrypted_sig, P521_PRIVATE_KEY_SIZE, key, sizeof(key),
-                         iv, sizeof(iv), nullptr, 0, sig_tag))
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    err = nvs_set_blob(handle, "tang_sig_key", encrypted_sig, P521_PRIVATE_KEY_SIZE);
+    // Save signing key
+    err = nvs_set_blob(handle, "tang_sig_key", sig_priv, P521_PRIVATE_KEY_SIZE);
     if (err != ESP_OK)
     {
       nvs_close(handle);
       return false;
     }
 
-    err = nvs_set_blob(handle, "tang_sig_tag", sig_tag, GCM_TAG_SIZE);
-    if (err != ESP_OK)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    // Encrypt and save exchange key
-    uint8_t encrypted_exc[P521_PRIVATE_KEY_SIZE];
-    uint8_t exc_tag[GCM_TAG_SIZE];
-    memcpy(encrypted_exc, exc_priv, P521_PRIVATE_KEY_SIZE);
-
-    if (!AESGCM::encrypt(encrypted_exc, P521_PRIVATE_KEY_SIZE, key, sizeof(key),
-                         iv, sizeof(iv), nullptr, 0, exc_tag))
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    err = nvs_set_blob(handle, "tang_exc_key", encrypted_exc, P521_PRIVATE_KEY_SIZE);
-    if (err != ESP_OK)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    err = nvs_set_blob(handle, "tang_exc_tag", exc_tag, GCM_TAG_SIZE);
+    // Save exchange key
+    err = nvs_set_blob(handle, "tang_exc_key", exc_priv, P521_PRIVATE_KEY_SIZE);
     if (err != ESP_OK)
     {
       nvs_close(handle);
@@ -177,7 +123,8 @@ public:
     return (err == ESP_OK);
   }
 
-  bool decrypt_and_load_tang_keys(const char *password)
+  // Load Tang keys directly from NVS (no decryption)
+  bool load_tang_keys()
   {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
@@ -187,79 +134,24 @@ public:
       return false;
     }
 
-    // Load salt
-    size_t len = SALT_SIZE;
-    err = nvs_get_blob(handle, "salt", salt, &len);
-    if (err != ESP_OK || len != SALT_SIZE)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    // Derive key
-    uint8_t key[16], iv[12] = {0};
-    if (PBKDF2::derive_key(key, sizeof(key), password, salt, SALT_SIZE, PBKDF2_ITERATIONS) != 0)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    // Load and decrypt signing key
-    uint8_t encrypted_sig[P521_PRIVATE_KEY_SIZE];
-    uint8_t sig_tag[GCM_TAG_SIZE];
-
-    len = P521_PRIVATE_KEY_SIZE;
-    err = nvs_get_blob(handle, "tang_sig_key", encrypted_sig, &len);
+    // Load signing key
+    size_t len = P521_PRIVATE_KEY_SIZE;
+    err = nvs_get_blob(handle, "tang_sig_key", sig_priv, &len);
     if (err != ESP_OK || len != P521_PRIVATE_KEY_SIZE)
     {
       nvs_close(handle);
       return false;
     }
-
-    len = GCM_TAG_SIZE;
-    err = nvs_get_blob(handle, "tang_sig_tag", sig_tag, &len);
-    if (err != ESP_OK || len != GCM_TAG_SIZE)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    if (!AESGCM::decrypt(encrypted_sig, P521_PRIVATE_KEY_SIZE, key, sizeof(key),
-                         iv, sizeof(iv), nullptr, 0, sig_tag))
-    {
-      nvs_close(handle);
-      return false;
-    }
-    memcpy(sig_priv, encrypted_sig, P521_PRIVATE_KEY_SIZE);
     P521::compute_public_key(sig_priv, sig_pub);
 
-    // Load and decrypt exchange key
-    uint8_t encrypted_exc[P521_PRIVATE_KEY_SIZE];
-    uint8_t exc_tag[GCM_TAG_SIZE];
-
+    // Load exchange key
     len = P521_PRIVATE_KEY_SIZE;
-    err = nvs_get_blob(handle, "tang_exc_key", encrypted_exc, &len);
+    err = nvs_get_blob(handle, "tang_exc_key", exc_priv, &len);
     if (err != ESP_OK || len != P521_PRIVATE_KEY_SIZE)
     {
       nvs_close(handle);
       return false;
     }
-
-    len = GCM_TAG_SIZE;
-    err = nvs_get_blob(handle, "tang_exc_tag", exc_tag, &len);
-    if (err != ESP_OK || len != GCM_TAG_SIZE)
-    {
-      nvs_close(handle);
-      return false;
-    }
-
-    if (!AESGCM::decrypt(encrypted_exc, P521_PRIVATE_KEY_SIZE, key, sizeof(key),
-                         iv, sizeof(iv), nullptr, 0, exc_tag))
-    {
-      nvs_close(handle);
-      return false;
-    }
-    memcpy(exc_priv, encrypted_exc, P521_PRIVATE_KEY_SIZE);
     P521::compute_public_key(exc_priv, exc_pub);
 
     nvs_close(handle);

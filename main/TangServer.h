@@ -32,8 +32,8 @@ const char *wifi_password = CONFIG_WIFI_PASSWORD;
 // --- Global State ---
 httpd_handle_t server_http = NULL;
 TangKeyStore keystore;
-bool is_active = false;
-ZKAuth zk_auth; // Zero-Knowledge Authentication
+bool is_active = true; // Auto-activate since we're using dummy keys
+ZKAuth zk_auth;        // Zero-Knowledge Authentication
 
 // WiFi event group
 static EventGroupHandle_t wifi_event_group;
@@ -119,46 +119,10 @@ bool perform_initial_setup()
   }
   ESP_LOGI(TAG, "Generated admin keypair");
 
-  // Disable watchdog for password input and key generation (can take a long time)
+  // Disable watchdog for key generation (can take a long time)
   esp_task_wdt_deinit();
 
-  // Prompt for password
-  ESP_LOGI(TAG, "Enter a password to encrypt the Tang keys:");
-  ESP_LOGI(TAG, "(Password required for activation/deactivation)");
-  printf("> ");
-  fflush(stdout);
-
-  char password[65] = {0};
-  int idx = 0;
-
-  while (true)
-  {
-    int c = getchar();
-    if (c == '\n' || c == '\r')
-    {
-      if (idx > 0)
-        break;
-      // Ignore empty newlines
-    }
-    else if (c >= 32 && c <= 126 && idx < 64)
-    {
-      password[idx++] = (char)c;
-      printf("*");
-      fflush(stdout);
-    }
-  }
-  printf("\n");
-
-  if (idx < 8)
-  {
-    ESP_LOGE(TAG, "ERROR: Password must be at least 8 characters");
-    ESP_LOGE(TAG, "Device requires restart. Use NUKE command to try again.");
-    return false;
-  }
-
-  ESP_LOGI(TAG, "Password set (%d characters)", idx);
-
-  // Generate and encrypt Tang keys
+  // Generate Tang keys
   ESP_LOGI(TAG, "Generating Tang keys (this may take a while)...");
 
   if (!P521::generate_keypair(keystore.sig_pub, keystore.sig_priv))
@@ -173,11 +137,11 @@ bool perform_initial_setup()
     return false;
   }
 
-  // Save admin key and salt
+  // Save admin key
   keystore.save_admin_key();
 
-  // Encrypt and save Tang keys
-  if (!keystore.encrypt_and_save_tang_keys(password))
+  // Save Tang keys directly (no encryption in prototype)
+  if (!keystore.save_tang_keys())
   {
     ESP_LOGE(TAG, "ERROR: Failed to save Tang keys");
     return false;
@@ -186,6 +150,7 @@ bool perform_initial_setup()
   ESP_LOGI(TAG, "Configuration saved to NVS");
   ESP_LOGI(TAG, "=======================================================");
   ESP_LOGI(TAG, "Setup complete! Device is ready to use");
+  ESP_LOGI(TAG, "NOTE: Keys are stored unencrypted for prototyping");
   ESP_LOGI(TAG, "=======================================================");
 
   // Re-enable watchdog
@@ -248,13 +213,6 @@ httpd_handle_t setup_http_server()
         .handler = handle_config,
         .user_ctx = NULL};
     httpd_register_uri_handler(server, &config_uri);
-
-    httpd_uri_t activate_uri = {
-        .uri = "/activate",
-        .method = HTTP_POST,
-        .handler = handle_activate,
-        .user_ctx = NULL};
-    httpd_register_uri_handler(server, &activate_uri);
 
     httpd_uri_t reboot_uri = {
         .uri = "/reboot",
@@ -322,7 +280,19 @@ void setup()
     ESP_LOGI(TAG, "Found existing configuration");
     success = keystore.load_admin_key();
     if (success)
+    {
       ESP_LOGI(TAG, "Loaded admin key");
+      // Auto-load Tang keys on startup (no activation needed in prototype)
+      if (keystore.load_tang_keys())
+      {
+        ESP_LOGI(TAG, "Loaded Tang keys - server ready");
+      }
+      else
+      {
+        ESP_LOGW(TAG, "Failed to load Tang keys");
+        success = false;
+      }
+    }
   }
   else
   {
@@ -372,11 +342,6 @@ void setup()
     ESP_LOGI(TAG, "HTTP server listening on port 80");
     ESP_LOGI(TAG, "  - ZK Auth UI: http://<ip>/");
     ESP_LOGI(TAG, "  - Tang Server: http://<ip>/adv");
-  }
-
-  if (!is_active)
-  {
-    ESP_LOGI(TAG, "Server is INACTIVE. POST to /activate to enable Tang services");
   }
 }
 
