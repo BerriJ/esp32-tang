@@ -13,13 +13,11 @@
 
 // Global ATCA configuration
 ATCAIfaceCfg atecc_cfg;
-cryptoauthlib
 
-    /**
-     * Initialize I2C and ATECC608B
-     */
-    bool
-    atecc608B_init()
+/**
+ * Initialize I2C and ATECC608B
+ */
+bool atecc608B_init()
 {
   Serial.println("\n=== ATECC608B Initialization ===");
 

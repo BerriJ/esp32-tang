@@ -2,58 +2,78 @@
   description = "ESP32 Tang Server Development Environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    nixpkgs-esp-dev.url = "github:mirrexagon/nixpkgs-esp-dev";
+    nixpkgs-esp-dev = {
+      url = "github:mirrexagon/nixpkgs-esp-dev";
+    };
+    nixpkgs.follows = "nixpkgs-esp-dev/nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils, nixpkgs-esp-dev }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      nixpkgs-esp-dev,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
-        pkgs = nixpkgs.legacyPackages.${system}.extend nixpkgs-esp-dev.overlays.default;
+        pkgs = import nixpkgs {
+          inherit system;
+          config = {
+            permittedInsecurePackages = [
+              "python3.13-ecdsa-0.19.1"
+            ];
+          };
+          overlays = [ nixpkgs-esp-dev.overlays.default ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
           name = "esp32-tang-dev";
 
-          buildInputs = with pkgs; [
-            # ESP-IDF with full toolchain
-            esp-idf-full
-            jose
-            clevis
+          buildInputs =
+            with pkgs;
+            [
+              # ESP-IDF with full toolchain
+              esp-idf-full
+              jose
+              clevis
 
-            # Development tools
-            gnumake
-            cmake
-            ninja
-            ccache
+              # Development tools
+              gnumake
+              cmake
+              ninja
+              ccache
 
-            # Serial communication tools
-            picocom
-            screen
-            minicom
+              # Serial communication tools
+              picocom
+              screen
+              minicom
 
-            # Development utilities
-            curl
-            wget
-            unzip
-            file
-            which
-            jq
+              # Development utilities
+              curl
+              wget
+              unzip
+              file
+              which
+              jq
 
-            # Text processing tools
-            gawk
-            gnused
-            gnugrep
+              # Text processing tools
+              gawk
+              gnused
+              gnugrep
 
-            # Optional development tools
-            clang-tools
-            bear
-          ] ++ lib.optionals stdenv.isLinux [
-            # Linux-specific packages for USB device access
-            udev
-            libusb1
-          ];
+              # Optional development tools
+              clang-tools
+              bear
+            ]
+            ++ lib.optionals stdenv.isLinux [
+              # Linux-specific packages for USB device access
+              udev
+              libusb1
+            ];
 
           shellHook = ''
             echo "🚀 ESP32 Tang Server Development Environment"
@@ -118,7 +138,10 @@
           '';
 
           # allow /dev/ access
-          extraDevPaths = [ "/dev/ttyUSB*" "/dev/ttyACM*" ];
+          extraDevPaths = [
+            "/dev/ttyUSB*"
+            "/dev/ttyACM*"
+          ];
 
           # Environment variables
           IDF_TOOLS_PATH = "$HOME/.espressif";
@@ -154,7 +177,10 @@
             mkdir -p "$CCACHE_DIR"
           '';
 
-          extraDevPaths = [ "/dev/ttyUSB*" "/dev/ttyACM*" ];
+          extraDevPaths = [
+            "/dev/ttyUSB*"
+            "/dev/ttyACM*"
+          ];
         };
       }
     );

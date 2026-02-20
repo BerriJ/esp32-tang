@@ -3,7 +3,7 @@
 
 #include <WebServer.h>
 #include <ArduinoJson.h>
-#include <mbedtls/sha512.h>
+#include <mbedtls/sha256.h>
 #include "crypto.h"
 #include "encoding.h"
 #include "jwe.h"
@@ -36,9 +36,9 @@ void handle_adv()
 
   // Signing/verification key
   JsonObject sig_key = keys.createNestedObject();
-  sig_key["alg"] = "ES512";
+  sig_key["alg"] = "ES256";
   sig_key["kty"] = "EC";
-  sig_key["crv"] = "P-521";
+  sig_key["crv"] = "P-256";
   sig_key["x"] = Base64URL::encode(keystore.sig_pub, P521_COORDINATE_SIZE);
   sig_key["y"] = Base64URL::encode(keystore.sig_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
   sig_key.createNestedArray("key_ops").add("verify");
@@ -47,7 +47,7 @@ void handle_adv()
   JsonObject rec_key = keys.createNestedObject();
   rec_key["alg"] = "ECMR";
   rec_key["kty"] = "EC";
-  rec_key["crv"] = "P-521";
+  rec_key["crv"] = "P-256";
   rec_key["x"] = Base64URL::encode(keystore.exc_pub, P521_COORDINATE_SIZE);
   rec_key["y"] = Base64URL::encode(keystore.exc_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
   rec_key.createNestedArray("key_ops").add("deriveKey");
@@ -58,7 +58,7 @@ void handle_adv()
 
   // Create protected header
   DynamicJsonDocument protected_doc(128);
-  protected_doc["alg"] = "ES512";
+  protected_doc["alg"] = "ES256";
   protected_doc["cty"] = "jwk-set+json";
 
   String protected_json;
@@ -67,11 +67,11 @@ void handle_adv()
 
   // Sign the payload
   String signing_input = protected_b64 + "." + payload_b64;
-  uint8_t hash[64];
-  mbedtls_sha512((uint8_t *)signing_input.c_str(), signing_input.length(), hash, 0);
+  uint8_t hash[32];
+  mbedtls_sha256((uint8_t *)signing_input.c_str(), signing_input.length(), hash, 0);
 
   uint8_t signature[P521_PUBLIC_KEY_SIZE];
-  if (!P521::sign(hash, 64, keystore.sig_priv, signature))
+  if (!P521::sign(hash, 32, keystore.sig_priv, signature))
   {
     server_http.send(500, "text/plain", "Signing failed");
     return;
@@ -140,7 +140,7 @@ void handle_rec()
   DynamicJsonDocument resp_doc(512);
   resp_doc["alg"] = "ECMR";
   resp_doc["kty"] = "EC";
-  resp_doc["crv"] = "P-521";
+  resp_doc["crv"] = "P-256";
   resp_doc["x"] = Base64URL::encode(shared_point, P521_COORDINATE_SIZE);
   resp_doc["y"] = Base64URL::encode(shared_point + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
   resp_doc.createNestedArray("key_ops").add("deriveKey");
@@ -158,7 +158,7 @@ void handle_pub()
 {
   DynamicJsonDocument doc(512);
   doc["kty"] = "EC";
-  doc["crv"] = "P-521";
+  doc["crv"] = "P-256";
   doc["x"] = Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE);
   doc["y"] = Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
   doc["alg"] = "ECDH-ES";

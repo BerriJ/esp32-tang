@@ -170,9 +170,9 @@ void setup()
   DEBUG_PRINTLN("\n\nESP32 Tang Server Starting...");
 
   // Initialize ATECC608A
-  if (atecc608a_init())
+  if (atecc608B_init())
   {
-    atecc608a_print_config();
+    atecc608B_print_config();
   }
   else
   {

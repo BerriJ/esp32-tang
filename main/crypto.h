@@ -14,10 +14,10 @@
 
 // --- Constants ---
 
-// P-521 uses 521 bits = 66 bytes per coordinate
-const int P521_PRIVATE_KEY_SIZE = 66; // Scalar value
-const int P521_PUBLIC_KEY_SIZE = 132; // Uncompressed point (x + y)
-const int P521_COORDINATE_SIZE = 66;  // Single coordinate (x or y)
+// P-256 uses 256 bits = 32 bytes per coordinate
+const int P521_PRIVATE_KEY_SIZE = 32; // Scalar value (keeping name for compatibility)
+const int P521_PUBLIC_KEY_SIZE = 64;  // Uncompressed point (x + y)
+const int P521_COORDINATE_SIZE = 32;  // Single coordinate (x or y)
 const int GCM_TAG_SIZE = 16;
 const int SALT_SIZE = 16;
 const int PBKDF2_ITERATIONS = 1000;
@@ -75,14 +75,18 @@ public:
 // Global RNG instance
 static RNG global_rng;
 
-// --- P-521 EC Operations ---
+// --- P-256 EC Operations ---
 class P521
 {
 public:
   static bool generate_keypair(uint8_t *pub_key, uint8_t *priv_key)
   {
-    if (global_rng.init() != 0)
+    int ret = global_rng.init();
+    if (ret != 0)
+    {
+      Serial.printf("ERROR: RNG init failed: -0x%04x\n", -ret);
       return false;
+    }
 
     mbedtls_ecp_group grp;
     mbedtls_ecp_point Q;
@@ -92,22 +96,42 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
-    if (ret == 0)
+    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    if (ret != 0)
+    {
+      Serial.printf("ERROR: ECP group load failed: -0x%04x\n", -ret);
+    }
+    else
     {
       ret = mbedtls_ecp_gen_keypair(&grp, &d, &Q, mbedtls_ctr_drbg_random, global_rng.context());
+      if (ret != 0)
+      {
+        Serial.printf("ERROR: ECP keypair gen failed: -0x%04x\n", -ret);
+      }
     }
     if (ret == 0)
     {
       ret = mbedtls_mpi_write_binary(&d, priv_key, P521_COORDINATE_SIZE);
+      if (ret != 0)
+      {
+        Serial.printf("ERROR: Write private key failed: -0x%04x\n", -ret);
+      }
     }
     if (ret == 0)
     {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key, P521_COORDINATE_SIZE);
+      if (ret != 0)
+      {
+        Serial.printf("ERROR: Write pub key X failed: -0x%04x\n", -ret);
+      }
     }
     if (ret == 0)
     {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub_key + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
+      if (ret != 0)
+      {
+        Serial.printf("ERROR: Write pub key Y failed: -0x%04x\n", -ret);
+      }
     }
 
     mbedtls_ecp_group_free(&grp);
@@ -130,7 +154,7 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret == 0)
     {
       ret = mbedtls_mpi_read_binary(&d, priv_key, P521_COORDINATE_SIZE);
@@ -168,7 +192,7 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret == 0)
     {
       ret = mbedtls_mpi_read_binary(&d, priv_key, P521_COORDINATE_SIZE);
@@ -222,7 +246,7 @@ public:
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret == 0)
     {
       ret = mbedtls_mpi_read_binary(&d, priv_key, P521_COORDINATE_SIZE);
