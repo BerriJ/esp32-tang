@@ -55,3 +55,6 @@ managed_components/
 # Cryptographic files
 *.jwk
 *.jwe
+
+# Other Binary files
+*.pdf
