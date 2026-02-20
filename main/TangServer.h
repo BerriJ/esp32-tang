@@ -1,23 +1,19 @@
 #ifndef TANG_SERVER_H
 #define TANG_SERVER_H
 
-#include <WiFi.h>
-#include <WebServer.h>
+#include <esp_wifi.h>
+#include <esp_event.h>
+#include <esp_log.h>
+#include <esp_http_server.h>
 #include <esp_task_wdt.h>
+#include <nvs_flash.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/event_groups.h>
+#include <string>
 #include "sdkconfig.h"
 
-// Enable/disable debug output
-#define DEBUG_SERIAL 1
-
-#if defined(DEBUG_SERIAL) && DEBUG_SERIAL > 0
-#define DEBUG_PRINT(...) Serial.print(__VA_ARGS__)
-#define DEBUG_PRINTLN(...) Serial.println(__VA_ARGS__)
-#define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
-#else
-#define DEBUG_PRINT(...)
-#define DEBUG_PRINTLN(...)
-#define DEBUG_PRINTF(...)
-#endif
+static const char *TAG = "TangServer";
 
 // Include core components
 #include "crypto.h"
@@ -32,93 +28,145 @@ const char *wifi_ssid = CONFIG_WIFI_SSID;
 const char *wifi_password = CONFIG_WIFI_PASSWORD;
 
 // --- Global State ---
-WebServer server_http(80);
+httpd_handle_t server_http = NULL;
 TangKeyStore keystore;
 bool is_active = false;
+
+// WiFi event group
+static EventGroupHandle_t wifi_event_group;
+const int WIFI_CONNECTED_BIT = BIT0;
+
+// --- WiFi Event Handler ---
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+  {
+    esp_wifi_connect();
+    ESP_LOGI(TAG, "WiFi connecting...");
+  }
+  else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+  {
+    esp_wifi_connect();
+    ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
+  }
+  else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+  {
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+  }
+}
 
 // --- WiFi Setup ---
 void setup_wifi()
 {
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname("esp-tang-lol");
+  // Initialize event group
+  wifi_event_group = xEventGroupCreate();
 
+  // Initialize network interface
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+  assert(sta_netif);
+
+  // Set hostname
+  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, "esp-tang-lol"));
+
+  // Initialize WiFi
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+  // Register event handlers
+  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+
+  // Configure WiFi
+  wifi_config_t wifi_config = {};
   if (strlen(wifi_ssid) > 0)
   {
-    WiFi.begin(wifi_ssid, wifi_password);
-    DEBUG_PRINTF("\nConnecting to SSID: %s ", wifi_ssid);
+    strncpy((char *)wifi_config.sta.ssid, wifi_ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, wifi_password, sizeof(wifi_config.sta.password));
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "Connecting to SSID: %s", wifi_ssid);
   }
   else
   {
-    DEBUG_PRINTLN("\nNo WiFi SSID configured");
+    ESP_LOGI(TAG, "No WiFi SSID configured");
   }
 }
 
 // --- Initial Setup ---
 bool perform_initial_setup()
 {
-  DEBUG_PRINTLN("\n=======================================================");
-  DEBUG_PRINTLN("FIRST BOOT: INITIAL SETUP REQUIRED");
-  DEBUG_PRINTLN("=======================================================");
+  ESP_LOGI(TAG, "=======================================================");
+  ESP_LOGI(TAG, "FIRST BOOT: INITIAL SETUP REQUIRED");
+  ESP_LOGI(TAG, "=======================================================");
 
   // Generate admin keypair
   if (!P521::generate_keypair(keystore.admin_pub, keystore.admin_priv))
   {
-    DEBUG_PRINTLN("ERROR: Failed to generate admin keypair");
+    ESP_LOGE(TAG, "ERROR: Failed to generate admin keypair");
     return false;
   }
-  DEBUG_PRINTLN("Generated admin keypair");
+  ESP_LOGI(TAG, "Generated admin keypair");
 
-  // Prompt for password
-  DEBUG_PRINTLN("\nEnter a password to encrypt the Tang keys:");
-  DEBUG_PRINTLN("(Password required for activation/deactivation)");
-  DEBUG_PRINT("> ");
-
-  String password = "";
-  while (true)
-  {
-    if (Serial.available() > 0)
-    {
-      char c = Serial.read();
-      if (c == '\n' || c == '\r')
-      {
-        if (password.length() > 0)
-          break;
-        // Ignore empty newlines
-      }
-      else if (c >= 32 && c <= 126)
-      {
-        password += c;
-        Serial.print('*');
-      }
-    }
-    delay(10);
-  }
-  DEBUG_PRINTLN();
-
-  if (password.length() < 8)
-  {
-    DEBUG_PRINTLN("ERROR: Password must be at least 8 characters");
-    DEBUG_PRINTLN("Device requires restart. Use NUKE command to try again.");
-    return false;
-  }
-
-  DEBUG_PRINTF("Password set (%d characters)\n", password.length());
-
-  // Disable watchdog for key generation
+  // Disable watchdog for password input and key generation (can take a long time)
   esp_task_wdt_deinit();
 
+  // Prompt for password
+  ESP_LOGI(TAG, "Enter a password to encrypt the Tang keys:");
+  ESP_LOGI(TAG, "(Password required for activation/deactivation)");
+  printf("> ");
+  fflush(stdout);
+
+  char password[65] = {0};
+  int idx = 0;
+
+  while (true)
+  {
+    int c = getchar();
+    if (c == '\n' || c == '\r')
+    {
+      if (idx > 0)
+        break;
+      // Ignore empty newlines
+    }
+    else if (c >= 32 && c <= 126 && idx < 64)
+    {
+      password[idx++] = (char)c;
+      printf("*");
+      fflush(stdout);
+    }
+  }
+  printf("\n");
+
+  if (idx < 8)
+  {
+    ESP_LOGE(TAG, "ERROR: Password must be at least 8 characters");
+    ESP_LOGE(TAG, "Device requires restart. Use NUKE command to try again.");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Password set (%d characters)", idx);
+
   // Generate and encrypt Tang keys
-  DEBUG_PRINTLN("Generating Tang keys (this may take a while)...");
+  ESP_LOGI(TAG, "Generating Tang keys (this may take a while)...");
 
   if (!P521::generate_keypair(keystore.sig_pub, keystore.sig_priv))
   {
-    DEBUG_PRINTLN("ERROR: Failed to generate signing key");
+    ESP_LOGE(TAG, "ERROR: Failed to generate signing key");
     return false;
   }
 
   if (!P521::generate_keypair(keystore.exc_pub, keystore.exc_priv))
   {
-    DEBUG_PRINTLN("ERROR: Failed to generate exchange key");
+    ESP_LOGE(TAG, "ERROR: Failed to generate exchange key");
     return false;
   }
 
@@ -126,16 +174,16 @@ bool perform_initial_setup()
   keystore.save_admin_key();
 
   // Encrypt and save Tang keys
-  if (!keystore.encrypt_and_save_tang_keys(password.c_str()))
+  if (!keystore.encrypt_and_save_tang_keys(password))
   {
-    DEBUG_PRINTLN("ERROR: Failed to save Tang keys");
+    ESP_LOGE(TAG, "ERROR: Failed to save Tang keys");
     return false;
   }
 
-  DEBUG_PRINTLN("Configuration saved to NVS");
-  DEBUG_PRINTLN("=======================================================");
-  DEBUG_PRINTLN("Setup complete! Device is ready to use");
-  DEBUG_PRINTLN("=======================================================\n");
+  ESP_LOGI(TAG, "Configuration saved to NVS");
+  ESP_LOGI(TAG, "=======================================================");
+  ESP_LOGI(TAG, "Setup complete! Device is ready to use");
+  ESP_LOGI(TAG, "=======================================================");
 
   // Re-enable watchdog
   esp_task_wdt_config_t wdt_config = {
@@ -147,27 +195,101 @@ bool perform_initial_setup()
   return true;
 }
 
-// --- Setup Routes ---
-void setup_routes()
+// --- Setup HTTP Server Routes ---
+httpd_handle_t setup_http_server()
 {
-  server_http.on("/adv", HTTP_GET, handle_adv);
-  server_http.on("/adv/", HTTP_GET, handle_adv);
-  server_http.on("/rec", HTTP_POST, handle_rec);
-  server_http.on("/rec/", HTTP_POST, handle_rec);
-  server_http.on("/pub", HTTP_GET, handle_pub);
-  server_http.on("/activate", HTTP_POST, handle_activate);
-  server_http.on("/reboot", HTTP_GET, handle_reboot);
-  server_http.on("/reset", HTTP_GET, handle_reset);
-  server_http.on("/nuke", HTTP_GET, handle_reset);
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.lru_purge_enable = true;
+  config.stack_size = 8192;
 
-  server_http.onNotFound(handle_not_found);
+  httpd_handle_t server = NULL;
+
+  if (httpd_start(&server, &config) == ESP_OK)
+  {
+    // Register URI handlers
+    httpd_uri_t adv_uri = {
+        .uri = "/adv",
+        .method = HTTP_GET,
+        .handler = handle_adv,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &adv_uri);
+
+    httpd_uri_t adv_uri_slash = {
+        .uri = "/adv/",
+        .method = HTTP_GET,
+        .handler = handle_adv,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &adv_uri_slash);
+
+    httpd_uri_t rec_uri = {
+        .uri = "/rec",
+        .method = HTTP_POST,
+        .handler = handle_rec,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &rec_uri);
+
+    httpd_uri_t pub_uri = {
+        .uri = "/pub",
+        .method = HTTP_GET,
+        .handler = handle_pub,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &pub_uri);
+
+    httpd_uri_t activate_uri = {
+        .uri = "/activate",
+        .method = HTTP_POST,
+        .handler = handle_activate,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &activate_uri);
+
+    httpd_uri_t reboot_uri = {
+        .uri = "/reboot",
+        .method = HTTP_GET,
+        .handler = handle_reboot,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &reboot_uri);
+
+    httpd_uri_t reset_uri = {
+        .uri = "/reset",
+        .method = HTTP_GET,
+        .handler = handle_reset,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &reset_uri);
+
+    httpd_uri_t nuke_uri = {
+        .uri = "/nuke",
+        .method = HTTP_GET,
+        .handler = handle_reset,
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &nuke_uri);
+
+    // Register custom error handler for 404
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
+
+    ESP_LOGI(TAG, "HTTP server listening on port 80");
+  }
+  else
+  {
+    ESP_LOGE(TAG, "Failed to start HTTP server");
+  }
+
+  return server;
 }
 
 // --- Main Setup ---
 void setup()
 {
-  Serial.begin(115200);
-  DEBUG_PRINTLN("\n\nESP32 Tang Server Starting...");
+  ESP_LOGI(TAG, "\n\nESP32 Tang Server Starting...");
+
+  // Initialize NVS (required before any storage operations)
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+  {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret);
+  ESP_LOGI(TAG, "NVS initialized");
 
   // Initialize ATECC608A
   if (atecc608B_init())
@@ -176,17 +298,17 @@ void setup()
   }
   else
   {
-    DEBUG_PRINTLN("WARNING: ATECC608A initialization failed");
+    ESP_LOGW(TAG, "WARNING: ATECC608A initialization failed");
   }
 
   // Load or initialize configuration
   bool success;
   if (keystore.is_configured())
   {
-    DEBUG_PRINTLN("Found existing configuration");
+    ESP_LOGI(TAG, "Found existing configuration");
     success = keystore.load_admin_key();
     if (success)
-      DEBUG_PRINTLN("Loaded admin key");
+      ESP_LOGI(TAG, "Loaded admin key");
   }
   else
   {
@@ -195,41 +317,32 @@ void setup()
 
   if (!success)
   {
-    DEBUG_PRINTLN("ERROR: Setup failed. Nuking and restarting...");
+    ESP_LOGE(TAG, "ERROR: Setup failed. Nuking and restarting...");
     keystore.nuke();
-    delay(1000);
-    ESP.restart();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
   }
 
-  DEBUG_PRINTLN("\nAdmin Public Key (Base64):");
-  DEBUG_PRINTF("\nAdmin Public Key x: %s", Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE).c_str());
-  DEBUG_PRINTF("\nAdmin Public Key y: %s", Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
+  ESP_LOGI(TAG, "\nAdmin Public Key (Base64):");
+  std::string x_b64 = Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE);
+  std::string y_b64 = Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
+  ESP_LOGI(TAG, "Admin Public Key x: %s", x_b64.c_str());
+  ESP_LOGI(TAG, "Admin Public Key y: %s", y_b64.c_str());
 
   setup_wifi();
-  setup_routes();
-
-  server_http.begin();
-  DEBUG_PRINTLN("HTTP server listening on port 80");
+  server_http = setup_http_server();
 
   if (!is_active)
   {
-    DEBUG_PRINTLN("Server is INACTIVE. POST to /activate to enable Tang services");
+    ESP_LOGI(TAG, "Server is INACTIVE. POST to /activate to enable Tang services");
   }
 }
 
 // --- Main Loop ---
 void loop()
 {
-  // WiFi status indicator
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    if ((millis() % 2000) < 50)
-    {
-      DEBUG_PRINT(".");
-    }
-  }
-
-  server_http.handleClient();
+  // Just delay - HTTP server handles requests in its own task
+  vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 #endif // TANG_SERVER_H

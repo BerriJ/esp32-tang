@@ -2,5 +2,3 @@
 dependencies:
   idf:
     version: ">=4.1.0"
-  espressif/arduino-esp32: ^3.3.2
-  bblanchon/arduinojson: ^6.21.3

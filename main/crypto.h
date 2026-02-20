@@ -11,6 +11,9 @@
 #include <mbedtls/md.h>
 #include <mbedtls/pkcs5.h>
 #include <esp_system.h>
+#include <esp_log.h>
+
+static const char *TAG_CRYPTO = "crypto";
 
 // --- Constants ---
 
@@ -84,7 +87,7 @@ public:
     int ret = global_rng.init();
     if (ret != 0)
     {
-      Serial.printf("ERROR: RNG init failed: -0x%04x\n", -ret);
+      ESP_LOGE(TAG_CRYPTO, "RNG init failed: -0x%04x", -ret);
       return false;
     }
 
@@ -99,14 +102,14 @@ public:
     ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret != 0)
     {
-      Serial.printf("ERROR: ECP group load failed: -0x%04x\n", -ret);
+      ESP_LOGE(TAG_CRYPTO, "ECP group load failed: -0x%04x", -ret);
     }
     else
     {
       ret = mbedtls_ecp_gen_keypair(&grp, &d, &Q, mbedtls_ctr_drbg_random, global_rng.context());
       if (ret != 0)
       {
-        Serial.printf("ERROR: ECP keypair gen failed: -0x%04x\n", -ret);
+        ESP_LOGE(TAG_CRYPTO, "ECP keypair gen failed: -0x%04x", -ret);
       }
     }
     if (ret == 0)
@@ -114,7 +117,7 @@ public:
       ret = mbedtls_mpi_write_binary(&d, priv_key, P521_COORDINATE_SIZE);
       if (ret != 0)
       {
-        Serial.printf("ERROR: Write private key failed: -0x%04x\n", -ret);
+        ESP_LOGE(TAG_CRYPTO, "Write private key failed: -0x%04x", -ret);
       }
     }
     if (ret == 0)
@@ -122,7 +125,7 @@ public:
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key, P521_COORDINATE_SIZE);
       if (ret != 0)
       {
-        Serial.printf("ERROR: Write pub key X failed: -0x%04x\n", -ret);
+        ESP_LOGE(TAG_CRYPTO, "Write pub key X failed: -0x%04x", -ret);
       }
     }
     if (ret == 0)
@@ -130,7 +133,7 @@ public:
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub_key + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
       if (ret != 0)
       {
-        Serial.printf("ERROR: Write pub key Y failed: -0x%04x\n", -ret);
+        ESP_LOGE(TAG_CRYPTO, "Write pub key Y failed: -0x%04x", -ret);
       }
     }
 
