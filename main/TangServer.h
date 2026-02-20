@@ -25,6 +25,7 @@
 #include "jwe.h"
 #include "tang_storage.h"
 #include "tang_handlers.h"
+#include "atecc608a.h"
 
 // --- Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
@@ -167,6 +168,16 @@ void setup()
 {
   Serial.begin(115200);
   DEBUG_PRINTLN("\n\nESP32 Tang Server Starting...");
+
+  // Initialize ATECC608A
+  if (atecc608a_init())
+  {
+    atecc608a_print_config();
+  }
+  else
+  {
+    DEBUG_PRINTLN("WARNING: ATECC608A initialization failed");
+  }
 
   // Load or initialize configuration
   bool success;
