@@ -36,6 +36,8 @@
           buildInputs =
             with pkgs;
             [
+              python3Packages.pandas
+
               # ESP-IDF with full toolchain
               esp-idf-full
               jose
