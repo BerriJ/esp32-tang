@@ -29,16 +29,16 @@ public:
     if (!x_item || !y_item || !cJSON_IsString(x_item) || !cJSON_IsString(y_item))
       return false;
 
-    uint8_t eph_pub_key[P521_PUBLIC_KEY_SIZE];
-    int x_len = Base64URL::decode(std::string(x_item->valuestring), eph_pub_key, P521_COORDINATE_SIZE);
-    int y_len = Base64URL::decode(std::string(y_item->valuestring), eph_pub_key + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
+    uint8_t eph_pub_key[P256_PUBLIC_KEY_SIZE];
+    int x_len = Base64URL::decode(std::string(x_item->valuestring), eph_pub_key, P256_COORDINATE_SIZE);
+    int y_len = Base64URL::decode(std::string(y_item->valuestring), eph_pub_key + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE);
 
-    if (x_len != P521_COORDINATE_SIZE || y_len != P521_COORDINATE_SIZE)
+    if (x_len != P256_COORDINATE_SIZE || y_len != P256_COORDINATE_SIZE)
       return false;
 
     // Compute ECDH shared secret
-    uint8_t shared_secret[P521_COORDINATE_SIZE];
-    if (!P521::ecdh_compute_shared_point(eph_pub_key, admin_priv_key, shared_secret, false))
+    uint8_t shared_secret[P256_COORDINATE_SIZE];
+    if (!P256::ecdh_compute_shared_point(eph_pub_key, admin_priv_key, shared_secret, false))
     {
       return false;
     }

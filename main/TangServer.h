@@ -112,7 +112,7 @@ bool perform_initial_setup()
   ESP_LOGI(TAG, "=======================================================");
 
   // Generate admin keypair
-  if (!P521::generate_keypair(keystore.admin_pub, keystore.admin_priv))
+  if (!P256::generate_keypair(keystore.admin_pub, keystore.admin_priv))
   {
     ESP_LOGE(TAG, "ERROR: Failed to generate admin keypair");
     return false;
@@ -125,13 +125,13 @@ bool perform_initial_setup()
   // Generate Tang keys
   ESP_LOGI(TAG, "Generating Tang keys (this may take a while)...");
 
-  if (!P521::generate_keypair(keystore.sig_pub, keystore.sig_priv))
+  if (!P256::generate_keypair(keystore.sig_pub, keystore.sig_priv))
   {
     ESP_LOGE(TAG, "ERROR: Failed to generate signing key");
     return false;
   }
 
-  if (!P521::generate_keypair(keystore.exc_pub, keystore.exc_priv))
+  if (!P256::generate_keypair(keystore.exc_pub, keystore.exc_priv))
   {
     ESP_LOGE(TAG, "ERROR: Failed to generate exchange key");
     return false;
@@ -308,8 +308,8 @@ void setup()
   }
 
   ESP_LOGI(TAG, "\nAdmin Public Key (Base64):");
-  std::string x_b64 = Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE);
-  std::string y_b64 = Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE);
+  std::string x_b64 = Base64URL::encode(keystore.admin_pub, P256_COORDINATE_SIZE);
+  std::string y_b64 = Base64URL::encode(keystore.admin_pub + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE);
   ESP_LOGI(TAG, "Admin Public Key x: %s", x_b64.c_str());
   ESP_LOGI(TAG, "Admin Public Key y: %s", y_b64.c_str());
 

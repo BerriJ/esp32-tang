@@ -89,7 +89,7 @@ public:
 ```cpp
 // Instead of plaintext keys in RAM:
 struct EncryptedRAMKey {
-    uint8_t ciphertext[P521_PRIVATE_KEY_SIZE];
+    uint8_t ciphertext[P256_PRIVATE_KEY_SIZE];
     uint8_t tag[16];
     uint8_t nonce[12];
 };
@@ -99,7 +99,7 @@ EncryptedRAMKey exc_priv_enc;
 
 // Only decrypt when needed for operations
 bool use_signing_key(std::function<void(uint8_t*)> operation) {
-    uint8_t temp_key[P521_PRIVATE_KEY_SIZE];
+    uint8_t temp_key[P256_PRIVATE_KEY_SIZE];
     if (!ram_crypto.decrypt(sig_priv_enc.ciphertext, sizeof(temp_key),
                            sig_priv_enc.tag, temp_key)) {
         return false;
@@ -130,7 +130,7 @@ if (keystore.decrypt_and_load_tang_keys(password)) {
 ```cpp
 // Instead of direct access:
 bool success = keystore.use_exchange_key([&](uint8_t* priv) {
-    P521::ecdh_exchange(client_pub, priv, shared_secret);
+    P256::ecdh_exchange(client_pub, priv, shared_secret);
 });
 ```
 

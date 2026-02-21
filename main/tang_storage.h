@@ -19,14 +19,14 @@ private:
 
 public:
   // Tang server keys (encrypted at rest, decrypted in memory when active)
-  uint8_t sig_priv[P521_PRIVATE_KEY_SIZE];
-  uint8_t sig_pub[P521_PUBLIC_KEY_SIZE];
-  uint8_t exc_priv[P521_PRIVATE_KEY_SIZE];
-  uint8_t exc_pub[P521_PUBLIC_KEY_SIZE];
+  uint8_t sig_priv[P256_PRIVATE_KEY_SIZE];
+  uint8_t sig_pub[P256_PUBLIC_KEY_SIZE];
+  uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
+  uint8_t exc_pub[P256_PUBLIC_KEY_SIZE];
 
   // Admin key (persistent)
-  uint8_t admin_priv[P521_PRIVATE_KEY_SIZE];
-  uint8_t admin_pub[P521_PUBLIC_KEY_SIZE];
+  uint8_t admin_priv[P256_PRIVATE_KEY_SIZE];
+  uint8_t admin_pub[P256_PUBLIC_KEY_SIZE];
 
   bool is_configured()
   {
@@ -39,7 +39,7 @@ public:
 
     size_t required_size = 0;
     err = nvs_get_blob(handle, "admin_key", nullptr, &required_size);
-    bool configured = (err == ESP_OK && required_size == P521_PRIVATE_KEY_SIZE);
+    bool configured = (err == ESP_OK && required_size == P256_PRIVATE_KEY_SIZE);
 
     nvs_close(handle);
     return configured;
@@ -55,13 +55,13 @@ public:
       return false;
     }
 
-    size_t len = P521_PRIVATE_KEY_SIZE;
+    size_t len = P256_PRIVATE_KEY_SIZE;
     err = nvs_get_blob(handle, "admin_key", admin_priv, &len);
-    bool success = (err == ESP_OK && len == P521_PRIVATE_KEY_SIZE);
+    bool success = (err == ESP_OK && len == P256_PRIVATE_KEY_SIZE);
 
     if (success)
     {
-      P521::compute_public_key(admin_priv, admin_pub);
+      P256::compute_public_key(admin_priv, admin_pub);
     }
 
     nvs_close(handle);
@@ -79,7 +79,7 @@ public:
     }
 
     // Save admin key
-    err = nvs_set_blob(handle, "admin_key", admin_priv, P521_PRIVATE_KEY_SIZE);
+    err = nvs_set_blob(handle, "admin_key", admin_priv, P256_PRIVATE_KEY_SIZE);
     if (err != ESP_OK)
     {
       nvs_close(handle);
@@ -103,7 +103,7 @@ public:
     }
 
     // Save signing key
-    err = nvs_set_blob(handle, "tang_sig_key", sig_priv, P521_PRIVATE_KEY_SIZE);
+    err = nvs_set_blob(handle, "tang_sig_key", sig_priv, P256_PRIVATE_KEY_SIZE);
     if (err != ESP_OK)
     {
       nvs_close(handle);
@@ -111,7 +111,7 @@ public:
     }
 
     // Save exchange key
-    err = nvs_set_blob(handle, "tang_exc_key", exc_priv, P521_PRIVATE_KEY_SIZE);
+    err = nvs_set_blob(handle, "tang_exc_key", exc_priv, P256_PRIVATE_KEY_SIZE);
     if (err != ESP_OK)
     {
       nvs_close(handle);
@@ -135,24 +135,24 @@ public:
     }
 
     // Load signing key
-    size_t len = P521_PRIVATE_KEY_SIZE;
+    size_t len = P256_PRIVATE_KEY_SIZE;
     err = nvs_get_blob(handle, "tang_sig_key", sig_priv, &len);
-    if (err != ESP_OK || len != P521_PRIVATE_KEY_SIZE)
+    if (err != ESP_OK || len != P256_PRIVATE_KEY_SIZE)
     {
       nvs_close(handle);
       return false;
     }
-    P521::compute_public_key(sig_priv, sig_pub);
+    P256::compute_public_key(sig_priv, sig_pub);
 
     // Load exchange key
-    len = P521_PRIVATE_KEY_SIZE;
+    len = P256_PRIVATE_KEY_SIZE;
     err = nvs_get_blob(handle, "tang_exc_key", exc_priv, &len);
-    if (err != ESP_OK || len != P521_PRIVATE_KEY_SIZE)
+    if (err != ESP_OK || len != P256_PRIVATE_KEY_SIZE)
     {
       nvs_close(handle);
       return false;
     }
-    P521::compute_public_key(exc_priv, exc_pub);
+    P256::compute_public_key(exc_priv, exc_pub);
 
     nvs_close(handle);
     return true;
@@ -160,10 +160,10 @@ public:
 
   void clear_tang_keys()
   {
-    memset(sig_priv, 0, P521_PRIVATE_KEY_SIZE);
-    memset(sig_pub, 0, P521_PUBLIC_KEY_SIZE);
-    memset(exc_priv, 0, P521_PRIVATE_KEY_SIZE);
-    memset(exc_pub, 0, P521_PUBLIC_KEY_SIZE);
+    memset(sig_priv, 0, P256_PRIVATE_KEY_SIZE);
+    memset(sig_pub, 0, P256_PUBLIC_KEY_SIZE);
+    memset(exc_priv, 0, P256_PRIVATE_KEY_SIZE);
+    memset(exc_pub, 0, P256_PUBLIC_KEY_SIZE);
   }
 
   void nuke()

@@ -39,8 +39,8 @@ static esp_err_t handle_adv(httpd_req_t *req)
   cJSON_AddStringToObject(sig_key, "alg", "ES256");
   cJSON_AddStringToObject(sig_key, "kty", "EC");
   cJSON_AddStringToObject(sig_key, "crv", "P-256");
-  cJSON_AddStringToObject(sig_key, "x", Base64URL::encode(keystore.sig_pub, P521_COORDINATE_SIZE).c_str());
-  cJSON_AddStringToObject(sig_key, "y", Base64URL::encode(keystore.sig_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(sig_key, "x", Base64URL::encode(keystore.sig_pub, P256_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(sig_key, "y", Base64URL::encode(keystore.sig_pub + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE).c_str());
   cJSON *sig_key_ops = cJSON_CreateArray();
   cJSON_AddItemToArray(sig_key_ops, cJSON_CreateString("verify"));
   cJSON_AddItemToObject(sig_key, "key_ops", sig_key_ops);
@@ -51,8 +51,8 @@ static esp_err_t handle_adv(httpd_req_t *req)
   cJSON_AddStringToObject(rec_key, "alg", "ECMR");
   cJSON_AddStringToObject(rec_key, "kty", "EC");
   cJSON_AddStringToObject(rec_key, "crv", "P-256");
-  cJSON_AddStringToObject(rec_key, "x", Base64URL::encode(keystore.exc_pub, P521_COORDINATE_SIZE).c_str());
-  cJSON_AddStringToObject(rec_key, "y", Base64URL::encode(keystore.exc_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(rec_key, "x", Base64URL::encode(keystore.exc_pub, P256_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(rec_key, "y", Base64URL::encode(keystore.exc_pub + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE).c_str());
   cJSON *rec_key_ops = cJSON_CreateArray();
   cJSON_AddItemToArray(rec_key_ops, cJSON_CreateString("deriveKey"));
   cJSON_AddItemToObject(rec_key, "key_ops", rec_key_ops);
@@ -80,8 +80,8 @@ static esp_err_t handle_adv(httpd_req_t *req)
   uint8_t hash[32];
   mbedtls_sha256((uint8_t *)signing_input.c_str(), signing_input.length(), hash, 0);
 
-  uint8_t signature[P521_PUBLIC_KEY_SIZE];
-  if (!P521::sign(hash, 32, keystore.sig_priv, signature))
+  uint8_t signature[P256_PUBLIC_KEY_SIZE];
+  if (!P256::sign(hash, 32, keystore.sig_priv, signature))
   {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Signing failed");
     return ESP_FAIL;
@@ -91,7 +91,7 @@ static esp_err_t handle_adv(httpd_req_t *req)
   cJSON *jws_root = cJSON_CreateObject();
   cJSON_AddStringToObject(jws_root, "payload", payload_b64.c_str());
   cJSON_AddStringToObject(jws_root, "protected", protected_b64.c_str());
-  cJSON_AddStringToObject(jws_root, "signature", Base64URL::encode(signature, P521_PUBLIC_KEY_SIZE).c_str());
+  cJSON_AddStringToObject(jws_root, "signature", Base64URL::encode(signature, P256_PUBLIC_KEY_SIZE).c_str());
 
   char *response = cJSON_PrintUnformatted(jws_root);
   cJSON_Delete(jws_root);
@@ -155,9 +155,9 @@ static esp_err_t handle_rec(httpd_req_t *req)
     return ESP_FAIL;
   }
 
-  uint8_t client_pub_key[P521_PUBLIC_KEY_SIZE];
-  if (Base64URL::decode(std::string(x_item->valuestring), client_pub_key, P521_COORDINATE_SIZE) != P521_COORDINATE_SIZE ||
-      Base64URL::decode(std::string(y_item->valuestring), client_pub_key + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE) != P521_COORDINATE_SIZE)
+  uint8_t client_pub_key[P256_PUBLIC_KEY_SIZE];
+  if (Base64URL::decode(std::string(x_item->valuestring), client_pub_key, P256_COORDINATE_SIZE) != P256_COORDINATE_SIZE ||
+      Base64URL::decode(std::string(y_item->valuestring), client_pub_key + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE) != P256_COORDINATE_SIZE)
   {
     cJSON_Delete(req_doc);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid key coordinates");
@@ -167,8 +167,8 @@ static esp_err_t handle_rec(httpd_req_t *req)
   cJSON_Delete(req_doc);
 
   // Perform ECDH to get shared point
-  uint8_t shared_point[P521_PUBLIC_KEY_SIZE];
-  if (!P521::ecdh_compute_shared_point(client_pub_key, keystore.exc_priv, shared_point, true))
+  uint8_t shared_point[P256_PUBLIC_KEY_SIZE];
+  if (!P256::ecdh_compute_shared_point(client_pub_key, keystore.exc_priv, shared_point, true))
   {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ECDH computation failed");
     return ESP_FAIL;
@@ -179,8 +179,8 @@ static esp_err_t handle_rec(httpd_req_t *req)
   cJSON_AddStringToObject(resp_root, "alg", "ECMR");
   cJSON_AddStringToObject(resp_root, "kty", "EC");
   cJSON_AddStringToObject(resp_root, "crv", "P-256");
-  cJSON_AddStringToObject(resp_root, "x", Base64URL::encode(shared_point, P521_COORDINATE_SIZE).c_str());
-  cJSON_AddStringToObject(resp_root, "y", Base64URL::encode(shared_point + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(resp_root, "x", Base64URL::encode(shared_point, P256_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(resp_root, "y", Base64URL::encode(shared_point + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE).c_str());
   cJSON *key_ops = cJSON_CreateArray();
   cJSON_AddItemToArray(key_ops, cJSON_CreateString("deriveKey"));
   cJSON_AddItemToObject(resp_root, "key_ops", key_ops);
@@ -225,8 +225,8 @@ static esp_err_t handle_pub(httpd_req_t *req)
   cJSON *doc = cJSON_CreateObject();
   cJSON_AddStringToObject(doc, "kty", "EC");
   cJSON_AddStringToObject(doc, "crv", "P-256");
-  cJSON_AddStringToObject(doc, "x", Base64URL::encode(keystore.admin_pub, P521_COORDINATE_SIZE).c_str());
-  cJSON_AddStringToObject(doc, "y", Base64URL::encode(keystore.admin_pub + P521_COORDINATE_SIZE, P521_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(doc, "x", Base64URL::encode(keystore.admin_pub, P256_COORDINATE_SIZE).c_str());
+  cJSON_AddStringToObject(doc, "y", Base64URL::encode(keystore.admin_pub + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE).c_str());
   cJSON_AddStringToObject(doc, "alg", "ECDH-ES");
 
   char *response = cJSON_PrintUnformatted(doc);
