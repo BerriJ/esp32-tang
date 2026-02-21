@@ -1,50 +1,8 @@
-#
-# FREERTOS
-#
-CONFIG_FREERTOS_HZ=1000
-# end of FREERTOS
-
-#
-# DIAGNOSTICS
-#
-CONFIG_DIAG_USE_EXTERNAL_LOG_WRAP=y
-# end of Diagnostics
-
-#
-# Power Management
-#
-# Lower brownout threshold to 2.28V to reduce false triggers
-CONFIG_ESP_BROWNOUT_DET_LVL_SEL_0=n
-CONFIG_ESP_BROWNOUT_DET_LVL_SEL_2=y
-CONFIG_ESP_BROWNOUT_DET_LVL=2
-
-# Reduce WiFi TX power to lower current draw during WiFi init
-CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=18
-CONFIG_ESP_PHY_MAX_TX_POWER=18
-
-#
-# Flash Configuration
-#
-# Set flash size to 4MB to match physical chip
-CONFIG_ESPTOOLPY_FLASHSIZE_2MB=n
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
-
-
-# Optional: Lower CPU frequency to 80MHz if 160MHz is not critical
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=n
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=80
-
-#
 # WiFi Configuration
-#
 CONFIG_WIFI_SSID="DoNotSetTheRealValueHere"
 CONFIG_WIFI_PASSWORD="PutTheRealPassInTheSdkconfigFile"
 
-#
 # ATECC608A Configuration
-#
 CONFIG_ATCA_I2C_SDA_PIN=17
 CONFIG_ATCA_I2C_SCL_PIN=16
 CONFIG_ATCA_I2C_ADDRESS=0xC0
