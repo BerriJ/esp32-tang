@@ -467,7 +467,7 @@ Config = {
             "read_key": 10,  # Points to self (Disable CheckMac Copy)
             "no_mac": 1,
             "limited_use": 0,
-            "encrypt_read": 1,
+            "encrypt_read": 0, # Reads never permitted if is_secret=1
             "is_secret": 1,
             "write_key": 10,
             "write_config": 4,  # Write with MAC (Table 2-7)
