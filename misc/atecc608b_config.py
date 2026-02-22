@@ -369,7 +369,7 @@ Config = {
             "limited_use": 0,
             "encrypt_read": 0,
             "is_secret": 1,
-            "write_key": 4,
+            "write_key": 0,  # Writes are not permitted
             "write_config": 2,  # Allow GenKey but not PrivWrite
         },
         "KeyConfig": {
@@ -393,7 +393,7 @@ Config = {
             "limited_use": 0,
             "encrypt_read": 0,  # Reads never permitted for private keys
             "is_secret": 1,
-            "write_key": 0,
+            "write_key": 0,  # Writes are not permitted
             "write_config": 2,  # Allow GenKey but not PrivWrite
         },
         "KeyConfig": {
@@ -434,7 +434,7 @@ Config = {
     },
     # -------------------------------------------------------------------------
     # SLOT 9: Public Key (Admin / Root)
-    # Used to authorize Slot 3 via Verify command.
+    # Used to authorize Slot 2 via Verify command.
     # -------------------------------------------------------------------------
     9: {
         "SlotConfig": {
@@ -467,7 +467,7 @@ Config = {
             "read_key": 10,  # Points to self (Disable CheckMac Copy)
             "no_mac": 1,
             "limited_use": 0,
-            "encrypt_read": 0, # Reads never permitted if is_secret=1
+            "encrypt_read": 0,  # Reads never permitted if is_secret=1
             "is_secret": 1,
             "write_key": 10,
             "write_config": 4,  # Write with MAC (Table 2-7)
@@ -483,17 +483,14 @@ Config = {
             "x509_id": 0,
         },
     },
-    # -------------------------------------------------------------------------
-    # SLOT 5: ECDH with Persisent Latch Dependency and ECDSA auth requirement
-    # -------------------------------------------------------------------------
     11: {
         "SlotConfig": {
             "read_key": 4,  # ECDH Enabled (Output in Clear)
             "no_mac": 0,
             "limited_use": 0,
-            "encrypt_read": 0,  # Reads never permitted for private keys
+            "encrypt_read": 0,
             "is_secret": 1,
-            "write_key": 0,
+            "write_key": 0,  # Writes are not permitted
             "write_config": 2,  # Allow GenKey but not PrivWrite
         },
         "KeyConfig": {
@@ -502,9 +499,55 @@ Config = {
             "key_type": 4,
             "lockable": 0,
             "req_random": 1,
-            "req_auth": 1,
-            "auth_key": 9,  # Must authorize with Slot 9 (Public Key)
-            "persistent_disable": 1,
+            "req_auth": 0,
+            "auth_key": 0,
+            "x509_id": 0,
+        },
+    },
+    12: {
+        "SlotConfig": {
+            "read_key": 4,  # ECDH Enabled (Output in Clear)
+            "no_mac": 0,
+            "limited_use": 0,
+            "encrypt_read": 0,
+            "is_secret": 1,
+            "write_key": 0,  # Writes are not permitted
+            "write_config": 2,  # Allow GenKey but not PrivWrite
+        },
+        "KeyConfig": {
+            "private": 1,
+            "pub_info": 1,
+            "key_type": 4,
+            "lockable": 0,
+            "req_random": 1,
+            "req_auth": 0,
+            "auth_key": 0,
+            "x509_id": 0,
+        },
+    },
+        # -------------------------------------------------------------------------
+    # SLOT 10: Authorization Key (Standard)
+    # Used to authorize CheckMac command.
+    # Does not require Nonce (just for testing / debugging).
+    # -------------------------------------------------------------------------
+    13: {
+        "SlotConfig": {
+            "read_key": 10,  # Points to self (Disable CheckMac Copy)
+            "no_mac": 1,
+            "limited_use": 0,
+            "encrypt_read": 0,  # Reads never permitted if is_secret=1
+            "is_secret": 1,
+            "write_key": 10,
+            "write_config": 4,  # Write with MAC (Table 2-7)
+        },
+        "KeyConfig": {
+            "private": 0,
+            "pub_info": 0,
+            "key_type": 7,  # SHA-256 Key
+            "lockable": 0,  # Maybe make that lockable if it works with ESP Efuse
+            "req_random": 0,
+            "req_auth": 0,
+            "auth_key": 0,
             "x509_id": 0,
         },
     },
