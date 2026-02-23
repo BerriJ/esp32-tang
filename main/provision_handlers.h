@@ -70,18 +70,64 @@ static esp_err_t handle_provision_api(httpd_req_t *req)
   }
   else
   {
-    // Perform the provisioning
-    if (provision_efuse_key5())
+    bool atecc_done = true;
+    bool efuse_done = true;
+
+    // Step 1: Provision ATECC608B config if needed
+    if (!is_atecc608b_config_locked())
     {
-      message = "EFUSE KEY5 provisioned successfully with HMAC key";
+      ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning ATECC608B configuration...");
+      atecc_done = provision_atecc608b_config();
+      if (!atecc_done)
+      {
+        message = "Failed to provision ATECC608B configuration";
+        success = false;
+        ESP_LOGE(TAG_PROVISION_HANDLERS, "%s", message);
+      }
+    }
+
+    // Step 2: Provision EFUSE KEY5 if needed and previous step succeeded
+    if (atecc_done && !is_efuse_key5_used())
+    {
+      ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning EFUSE KEY5...");
+      efuse_done = provision_efuse_key5();
+      if (!efuse_done)
+      {
+        message = "Failed to provision EFUSE KEY5";
+        success = false;
+        ESP_LOGE(TAG_PROVISION_HANDLERS, "%s", message);
+      }
+    }
+
+    if (!is_atecc608b_data_locked())
+    {
+      ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning ATECC608B data zone...");
+      bool data_done = provision_atecc608b_data_zone();
+      if (!data_done)
+      {
+        message = "Failed to provision ATECC608B data zone";
+        success = false;
+        ESP_LOGE(TAG_PROVISION_HANDLERS, "%s", message);
+      }
+    }
+
+    // Build success message
+    if (atecc_done && efuse_done)
+    {
+      if (!is_atecc608b_config_locked() && !is_efuse_key5_used())
+      {
+        message = "Provisioned ATECC608B configuration and EFUSE KEY5 successfully";
+      }
+      else if (!is_atecc608b_config_locked())
+      {
+        message = "ATECC608B configuration provisioned and locked successfully";
+      }
+      else
+      {
+        message = "EFUSE KEY5 provisioned successfully with HMAC key";
+      }
       success = true;
       ESP_LOGI(TAG_PROVISION_HANDLERS, "%s", message);
-    }
-    else
-    {
-      message = "Failed to provision EFUSE KEY5";
-      success = false;
-      ESP_LOGE(TAG_PROVISION_HANDLERS, "%s", message);
     }
   }
 

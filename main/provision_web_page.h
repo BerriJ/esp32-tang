@@ -205,17 +205,19 @@ const char PROVISION_WEB_PAGE[] = R"rawliteral(
         <div class="info-box">
             <h3>ℹ️ What This Does</h3>
             <p>
-                This will write a hardcoded HMAC key to the ESP32-C6 EFUSE BLOCK_KEY5.
-                The key purpose will be set to <code>EFUSE_KEY_PURPOSE_HMAC_UP</code> 
-                for use in HMAC calculations.
+                This will provision your device security hardware:
             </p>
+            <ul style="margin-top: 10px; margin-left: 20px; color: #1565C0;">
+                <li><strong>ATECC608B:</strong> Write secure configuration (SlotConfig, KeyConfig, ChipOptions) and lock the config zone</li>
+                <li><strong>ESP32-C6:</strong> Write hardcoded HMAC key to EFUSE BLOCK_KEY5 with purpose <code>EFUSE_KEY_PURPOSE_HMAC_UP</code></li>
+            </ul>
             <p style="margin-top: 10px; font-weight: bold;">
-                ⚠️ Warning: This is a one-time operation and cannot be undone!
+                ⚠️ Warning: These are one-time operations and cannot be undone!
             </p>
         </div>
         
         <div id="statusMessage" class="status-message"></div>
-        
+        Device
         <button id="provisionBtn" class="provision-btn" onclick="provisionDevice()">
             Provision EFUSE KEY5
         </button>
@@ -238,6 +240,7 @@ const char PROVISION_WEB_PAGE[] = R"rawliteral(
                 reasonsList.innerHTML = '';
                 
                 // Build list of actual conditions
+                
                 if (status.config_unlocked) {
                     const li = document.createElement('li');
                     li.textContent = 'ATECC608B Config Zone is unlocked';
@@ -273,7 +276,7 @@ const char PROVISION_WEB_PAGE[] = R"rawliteral(
             btn.disabled = true;
             btn.textContent = 'Provisioning...';
             
-            // Show info message
+            // Show info messageProvisioning device security hardware
             statusMsg.className = 'status-message info';
             statusMsg.textContent = 'Writing HMAC key to EFUSE BLOCK_KEY5...';
             

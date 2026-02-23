@@ -583,23 +583,20 @@ for slot_num, slot_data in Config.items():
     set_key_config(slot=slot_num, **slot_data["KeyConfig"])
 
 # Print the resulting bytes for verification
-# print("--- Generated Configuration ---")
-# print(f"SlotConfig (Bytes 20- 51): {[hex(x) for x in slot_config]}")
-# print(f"KeyConfig  (Bytes 96-127): {[hex(x) for x in key_config]}")
+print("\n--- Generated Configuration ---")
+print(f"SlotConfig (Bytes 20- 51): {[hex(x) for x in slot_config]}\n")
+print(f"KeyConfig  (Bytes 96-127): {[hex(x) for x in key_config]}\n")
 
-# # %%
-# slot_df = DataFrame(
-#     {
-#         "SlotConfig": [
-#             f"{hex(slot_config[i*2])} {hex(slot_config[i*2+1])}" for i in range(16)
-#         ],
-#         "KeyConfig": [
-#             f"{hex(key_config[i*2])} {hex(key_config[i*2+1])}" for i in range(16)
-#         ],
-#     }
-# )
-# print(slot_df)
+
+# Byte 69 has to be set to 
+
+print("Byte 69 (Persistent Latch enabled with Keyslot 10:")
+print(f"Persistent Latch   (Byte 69): {[hex(x) for x in [0b10001010]]}\n")
+
+
 # %%
+print("Bytes 90-91 (IO Protection optional and Key is Slot 6)")
+print(f"IO Protection  (Bytes 90-91): {[hex(x) for x in [0b00000010, 0b01100000]]}")
 
 # ==========================================
 # 3. HOW TO APPLY (Pseudo-code)
