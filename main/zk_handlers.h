@@ -7,6 +7,7 @@
 #include <string.h>
 #include "zk_auth.h"
 #include "zk_web_page.h"
+#include "provision.h"
 
 static const char *TAG_ZK = "zk_handlers";
 
@@ -17,6 +18,17 @@ extern httpd_handle_t server_http;
 // Serve the main web interface
 static esp_err_t handle_zk_root(httpd_req_t *req)
 {
+  // Check if provisioning is needed - if so, redirect
+  if (needs_provisioning())
+  {
+    ESP_LOGI(TAG_ZK, "Provisioning needed - redirecting to /provision");
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/provision");
+    httpd_resp_sendstr(req, "Redirecting to provisioning page...");
+    return ESP_OK;
+  }
+
+  // Normal landing page
   httpd_resp_set_type(req, "text/html");
   httpd_resp_sendstr(req, ZK_WEB_PAGE);
   return ESP_OK;

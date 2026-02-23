@@ -24,6 +24,8 @@ static const char *TAG = "TangServer";
 #include "tang_handlers.h"
 #include "zk_auth.h"
 #include "zk_handlers.h"
+#include "provision.h"
+#include "provision_handlers.h"
 
 // --- Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
@@ -175,6 +177,9 @@ httpd_handle_t setup_http_server()
 
   if (httpd_start(&server, &config) == ESP_OK)
   {
+    // Register provisioning handlers first (must be before ZK handlers)
+    register_provision_handlers(server);
+
     // Register ZK authentication handlers (including root "/" handler)
     register_zk_handlers(server);
 
