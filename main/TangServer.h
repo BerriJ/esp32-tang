@@ -18,7 +18,6 @@ static const char *TAG = "TangServer";
 // Include core components
 #include "crypto.h"
 #include "encoding.h"
-#include "jwe.h"
 #include "tang_storage.h"
 #include "atecc608a.h"
 #include "tang_handlers.h"

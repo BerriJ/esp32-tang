@@ -330,45 +330,4 @@ public:
   }
 };
 
-// --- Concat KDF (for JWE) ---
-static void write_be32(uint8_t *buf, uint32_t val)
-{
-  buf[0] = (val >> 24) & 0xFF;
-  buf[1] = (val >> 16) & 0xFF;
-  buf[2] = (val >> 8) & 0xFF;
-  buf[3] = val & 0xFF;
-}
-
-static void concat_kdf(uint8_t *output, size_t output_len, const uint8_t *shared_secret,
-                       size_t secret_len, const char *alg_id, size_t alg_id_len)
-{
-  mbedtls_sha256_context ctx;
-  uint8_t counter[4], field_len[4];
-  const uint8_t zeros[4] = {0};
-  uint8_t digest[32];
-
-  mbedtls_sha256_init(&ctx);
-  mbedtls_sha256_starts(&ctx, 0);
-
-  write_be32(counter, 1);
-  mbedtls_sha256_update(&ctx, counter, sizeof(counter));
-  mbedtls_sha256_update(&ctx, shared_secret, secret_len);
-
-  write_be32(field_len, alg_id_len);
-  mbedtls_sha256_update(&ctx, field_len, sizeof(field_len));
-  mbedtls_sha256_update(&ctx, (const uint8_t *)alg_id, alg_id_len);
-
-  mbedtls_sha256_update(&ctx, zeros, sizeof(zeros));
-  mbedtls_sha256_update(&ctx, zeros, sizeof(zeros));
-
-  write_be32(field_len, output_len * 8);
-  mbedtls_sha256_update(&ctx, field_len, sizeof(field_len));
-
-  mbedtls_sha256_finish(&ctx, digest);
-  mbedtls_sha256_free(&ctx);
-
-  memcpy(output, digest, output_len);
-  memset(digest, 0, sizeof(digest));
-}
-
 #endif // CRYPTO_H

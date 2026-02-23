@@ -8,7 +8,6 @@
 #include <string>
 #include "crypto.h"
 #include "encoding.h"
-#include "jwe.h"
 #include "tang_storage.h"
 
 static const char *TAG_HANDLERS = "tang_handlers";
