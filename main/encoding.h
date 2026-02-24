@@ -1,65 +1,32 @@
 #ifndef ENCODING_H
 #define ENCODING_H
 
-#include <string>
+#include "atca_helpers.h"
 #include <cstring>
 #include <mbedtls/base64.h>
+#include <string>
 
-// --- Base64URL Encoding ---
-class Base64URL
+static bool b64url_encode_buf(const uint8_t *data, size_t data_len,
+                              char *out_buf, size_t out_max_len)
 {
-public:
-  static std::string encode(const uint8_t *data, size_t len)
-  {
-    size_t olen = 0;
-    mbedtls_base64_encode(nullptr, 0, &olen, data, len);
+  size_t b64_len = out_max_len;
+  ATCA_STATUS status = atcab_base64encode_(data, data_len, out_buf, &b64_len,
+                                           atcab_b64rules_urlsafe());
 
-    char *buf = new char[olen + 1];
-    mbedtls_base64_encode((uint8_t *)buf, olen, &olen, data, len);
-    buf[olen] = '\0';
+  return (status == ATCA_SUCCESS && b64_len < out_max_len);
+}
 
-    std::string result(buf);
-    delete[] buf;
+static bool b64url_decode_buf(const char *in_str, uint8_t *out_buf,
+                              size_t expected_len)
+{
+  if (!in_str || !out_buf)
+    return false;
 
-    // Replace + with -, / with _, and remove padding
-    for (size_t i = 0; i < result.length(); i++)
-    {
-      if (result[i] == '+')
-        result[i] = '-';
-      else if (result[i] == '/')
-        result[i] = '_';
-    }
+  size_t out_len = expected_len;
+  ATCA_STATUS status = atcab_base64decode_(in_str, strlen(in_str), out_buf,
+                                           &out_len, atcab_b64rules_urlsafe());
 
-    size_t pad = result.find('=');
-    if (pad != std::string::npos)
-      result.erase(pad);
-
-    return result;
-  }
-
-  static int decode(const std::string &b64_url, uint8_t *output, int max_len)
-  {
-    std::string b64 = b64_url;
-
-    // Replace URL-safe characters back to standard base64
-    for (size_t i = 0; i < b64.length(); i++)
-    {
-      if (b64[i] == '-')
-        b64[i] = '+';
-      else if (b64[i] == '_')
-        b64[i] = '/';
-    }
-
-    // Add padding
-    while (b64.length() % 4)
-      b64 += '=';
-
-    size_t len = 0;
-    return (mbedtls_base64_decode(output, max_len, &len,
-                                  (const uint8_t *)b64.c_str(), b64.length()) == 0)
-               ? len
-               : -1;
-  }
-};
+  return (status == ATCA_SUCCESS && out_len == expected_len);
+}
 
 #endif // ENCODING_H

@@ -204,13 +204,6 @@ httpd_handle_t setup_http_server()
         .user_ctx = NULL};
     httpd_register_uri_handler(server, &rec_uri);
 
-    httpd_uri_t pub_uri = {
-        .uri = "/pub",
-        .method = HTTP_GET,
-        .handler = handle_pub,
-        .user_ctx = NULL};
-    httpd_register_uri_handler(server, &pub_uri);
-
     httpd_uri_t config_uri = {
         .uri = "/config",
         .method = HTTP_GET,
@@ -310,12 +303,6 @@ void setup()
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
   }
-
-  ESP_LOGI(TAG, "\nAdmin Public Key (Base64):");
-  std::string x_b64 = Base64URL::encode(keystore.admin_pub, P256_COORDINATE_SIZE);
-  std::string y_b64 = Base64URL::encode(keystore.admin_pub + P256_COORDINATE_SIZE, P256_COORDINATE_SIZE);
-  ESP_LOGI(TAG, "Admin Public Key x: %s", x_b64.c_str());
-  ESP_LOGI(TAG, "Admin Public Key y: %s", y_b64.c_str());
 
   // Initialize Zero-Knowledge Authentication
   ESP_LOGI(TAG, "Initializing Zero-Knowledge Authentication...");
