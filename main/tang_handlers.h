@@ -10,6 +10,7 @@
 #include "encoding.h"
 #include "tang_storage.h"
 #include "cryptoauthlib.h"
+#include "yfromx.h"
 
 static const char *TAG_HANDLERS = "tang_handlers";
 
@@ -29,8 +30,10 @@ static esp_err_t handle_adv(httpd_req_t *req)
   }
 
   uint8_t sig_pub[ATCA_PUB_KEY_SIZE];
+  uint8_t exc_pub[ATCA_PUB_KEY_SIZE];
 
-  if (atcab_get_pubkey(1, sig_pub) != ATCA_SUCCESS)
+  if (atcab_get_pubkey(1, sig_pub) != ATCA_SUCCESS ||
+      atcab_get_pubkey(4, exc_pub) != ATCA_SUCCESS)
   {
     ESP_LOGE(TAG_HANDLERS, "Failed to read public keys from secure element");
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Hardware error");
@@ -42,8 +45,8 @@ static esp_err_t handle_adv(httpd_req_t *req)
 
   b64url_encode_buf(&sig_pub[0], 32, sig_x_b64, sizeof(sig_x_b64));
   b64url_encode_buf(&sig_pub[32], 32, sig_y_b64, sizeof(sig_y_b64));
-  b64url_encode_buf(&keystore.exc_pub[0], 32, rec_x_b64, sizeof(rec_x_b64));
-  b64url_encode_buf(&keystore.exc_pub[32], 32, rec_y_b64, sizeof(rec_y_b64));
+  b64url_encode_buf(&exc_pub[0], 32, rec_x_b64, sizeof(rec_x_b64));
+  b64url_encode_buf(&exc_pub[32], 32, rec_y_b64, sizeof(rec_y_b64));
 
   // Build JWK set payload using cJSON
   cJSON *payload_root = cJSON_CreateObject();
@@ -191,32 +194,41 @@ static esp_err_t handle_rec(httpd_req_t *req)
     return ESP_FAIL;
   }
 
-  uint8_t client_pub_key[P256_PUBLIC_KEY_SIZE];
+  uint8_t client_pub_key[ATCA_PUB_KEY_SIZE]; // 64 bytes (X and Y)
 
-  // Use the new helper to decode and strictly validate the length of both coordinates
-  if (!b64url_decode_buf(x_item->valuestring, &client_pub_key[0], P256_COORDINATE_SIZE) ||
-      !b64url_decode_buf(y_item->valuestring, &client_pub_key[P256_COORDINATE_SIZE], P256_COORDINATE_SIZE))
+  if (!b64url_decode_buf(x_item->valuestring, &client_pub_key[0], 32) ||
+      !b64url_decode_buf(y_item->valuestring, &client_pub_key[32], 32))
   {
     cJSON_Delete(req_doc);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid key coordinates");
     return ESP_FAIL;
   }
-
   cJSON_Delete(req_doc);
 
-  // Perform ECDH to get shared point
-  uint8_t shared_point[P256_PUBLIC_KEY_SIZE];
-  if (!P256::ecdh_compute_shared_point(client_pub_key, keystore.exc_priv, shared_point, true))
+  // The hardware only returns the 32-byte X coordinate!
+  uint8_t shared_x[32];
+
+  // Call the ATECC608B using Slot 4
+  if (atcab_ecdh(4, client_pub_key, shared_x) != ATCA_SUCCESS)
   {
+    ESP_LOGE(TAG_HANDLERS, "Hardware ECDH failed");
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ECDH computation failed");
     return ESP_FAIL;
   }
 
+  // Tang requires a 64-byte point. We don't have Y.
+  // Filling Y with dummy data to satisfy the JWK format (this breaks Clevis decryption).
+  uint8_t shared_y1[32] = {0};
+  uint8_t shared_y2[32] = {0};
+
   char shared_x_b64[64] = {0};
   char shared_y_b64[64] = {0};
 
-  b64url_encode_buf(&shared_point[0], P256_COORDINATE_SIZE, shared_x_b64, sizeof(shared_x_b64));
-  b64url_encode_buf(&shared_point[P256_COORDINATE_SIZE], P256_COORDINATE_SIZE, shared_y_b64, sizeof(shared_y_b64));
+  b64url_encode_buf(shared_x, 32, shared_x_b64, sizeof(shared_x_b64));
+
+  compute_p256_y_from_x(shared_x, shared_y1, shared_y2); // This is a hack to get a valid Y coordinate for the JWK. It won't be used for actual ECDH.
+
+  b64url_encode_buf(shared_y1, 32, shared_y_b64, sizeof(shared_y_b64));
 
   // Return shared point as JWK
   cJSON *resp_root = cJSON_CreateObject();
