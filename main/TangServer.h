@@ -218,20 +218,6 @@ httpd_handle_t setup_http_server()
         .user_ctx = NULL};
     httpd_register_uri_handler(server, &reboot_uri);
 
-    httpd_uri_t reset_uri = {
-        .uri = "/reset",
-        .method = HTTP_GET,
-        .handler = handle_reset,
-        .user_ctx = NULL};
-    httpd_register_uri_handler(server, &reset_uri);
-
-    httpd_uri_t nuke_uri = {
-        .uri = "/nuke",
-        .method = HTTP_GET,
-        .handler = handle_reset,
-        .user_ctx = NULL};
-    httpd_register_uri_handler(server, &nuke_uri);
-
     // Register custom error handler for 404
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
 

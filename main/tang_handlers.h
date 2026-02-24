@@ -28,16 +28,22 @@ static esp_err_t handle_adv(httpd_req_t *req)
     return ESP_FAIL;
   }
 
-  ATCA_STATUS status;
+  uint8_t sig_pub[ATCA_PUB_KEY_SIZE];
+
+  if (atcab_get_pubkey(1, sig_pub) != ATCA_SUCCESS)
+  {
+    ESP_LOGE(TAG_HANDLERS, "Failed to read public keys from secure element");
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Hardware error");
+    return ESP_FAIL;
+  }
+
   char sig_x_b64[64] = {0}, sig_y_b64[64] = {0};
   char rec_x_b64[64] = {0}, rec_y_b64[64] = {0};
 
-  b64url_encode_buf(&keystore.sig_pub[0], 32, sig_x_b64, sizeof(sig_x_b64));
-  b64url_encode_buf(&keystore.sig_pub[32], 32, sig_y_b64, sizeof(sig_y_b64));
+  b64url_encode_buf(&sig_pub[0], 32, sig_x_b64, sizeof(sig_x_b64));
+  b64url_encode_buf(&sig_pub[32], 32, sig_y_b64, sizeof(sig_y_b64));
   b64url_encode_buf(&keystore.exc_pub[0], 32, rec_x_b64, sizeof(rec_x_b64));
   b64url_encode_buf(&keystore.exc_pub[32], 32, rec_y_b64, sizeof(rec_y_b64));
-
-  uint8_t raw_pubkey[64] = {keystore.sig_pub[0]};
 
   // Build JWK set payload using cJSON
   cJSON *payload_root = cJSON_CreateObject();
@@ -90,25 +96,31 @@ static esp_err_t handle_adv(httpd_req_t *req)
   char *protected_b64 = (char *)malloc(protected_b64_size);
   b64url_encode_buf((uint8_t *)protected_json, protected_len, protected_b64, protected_b64_size);
 
+  free(protected_json);
+  cJSON_Delete(protected_root);
+
   // Sign the payload
   size_t signing_input_size = strlen(protected_b64) + 1 + strlen(payload_b64) + 1;
   char *signing_input = (char *)malloc(signing_input_size);
   snprintf(signing_input, signing_input_size, "%s.%s", protected_b64, payload_b64);
 
   uint8_t hash[32];
-  mbedtls_sha256((uint8_t *)signing_input, signing_input_size - 1, hash, 0);
+  mbedtls_sha256((const uint8_t *)signing_input, strlen(signing_input), hash, 0);
   free(signing_input);
 
-  uint8_t signature[P256_PUBLIC_KEY_SIZE];
-  if (!P256::sign(hash, 32, keystore.sig_priv, signature))
+  uint8_t signature[ATCA_ECCP256_SIG_SIZE];
+  if (atcab_sign(1, hash, signature) != ATCA_SUCCESS)
   {
+    ESP_LOGE(TAG_HANDLERS, "Hardware signing failed");
+    free(payload_b64);
+    free(protected_b64);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Signing failed");
     return ESP_FAIL;
   }
+
   char sig_b64[128] = {0};
   b64url_encode_buf(signature, sizeof(signature), sig_b64, sizeof(sig_b64));
 
-  // Build JWS response
   cJSON *jws_root = cJSON_CreateObject();
   cJSON_AddStringToObject(jws_root, "payload", payload_b64);
   cJSON_AddStringToObject(jws_root, "protected", protected_b64);
@@ -117,7 +129,10 @@ static esp_err_t handle_adv(httpd_req_t *req)
   char *response = cJSON_PrintUnformatted(jws_root);
   cJSON_Delete(jws_root);
 
-  httpd_resp_set_type(req, "application/json");
+  free(payload_b64);
+  free(protected_b64);
+
+  httpd_resp_set_type(req, "application/jose+json"); // Tang expects this specific type
   httpd_resp_sendstr(req, response);
   free(response);
 
@@ -252,17 +267,6 @@ static esp_err_t handle_config(httpd_req_t *req)
 static esp_err_t handle_reboot(httpd_req_t *req)
 {
   httpd_resp_sendstr(req, "Rebooting...");
-  vTaskDelay(pdMS_TO_TICKS(1000));
-  esp_restart();
-  return ESP_OK;
-}
-
-// GET /reset or /nuke - Nuke configuration and restart
-static esp_err_t handle_reset(httpd_req_t *req)
-{
-  ESP_LOGI(TAG_HANDLERS, "Reset endpoint called. Nuking configuration...");
-  keystore.nuke();
-  httpd_resp_sendstr(req, "Nuked configuration and restarting...");
   vTaskDelay(pdMS_TO_TICKS(1000));
   esp_restart();
   return ESP_OK;
