@@ -106,31 +106,16 @@ bool perform_initial_setup() {
   ESP_LOGI(TAG, "FIRST BOOT: INITIAL SETUP REQUIRED");
   ESP_LOGI(TAG, "=======================================================");
 
-  // Generate admin keypair
-  if (!P256::generate_keypair(keystore.admin_pub, keystore.admin_priv)) {
-    ESP_LOGE(TAG, "ERROR: Failed to generate admin keypair");
-    return false;
-  }
-  ESP_LOGI(TAG, "Generated admin keypair");
-
   // Disable watchdog for key generation (can take a long time)
   esp_task_wdt_deinit();
 
   // Generate Tang keys
   ESP_LOGI(TAG, "Generating Tang keys (this may take a while)...");
 
-  if (!P256::generate_keypair(keystore.sig_pub, keystore.sig_priv)) {
-    ESP_LOGE(TAG, "ERROR: Failed to generate signing key");
-    return false;
-  }
-
   if (!P256::generate_keypair(keystore.exc_pub, keystore.exc_priv)) {
     ESP_LOGE(TAG, "ERROR: Failed to generate exchange key");
     return false;
   }
-
-  // Save admin key
-  keystore.save_admin_key();
 
   // Save Tang keys directly (no encryption in prototype)
   if (!keystore.save_tang_keys()) {
@@ -234,29 +219,16 @@ void setup() {
   }
 
   // Load or initialize configuration
-  bool success;
   if (keystore.is_configured()) {
     ESP_LOGI(TAG, "Found existing configuration");
-    success = keystore.load_admin_key();
-    if (success) {
-      ESP_LOGI(TAG, "Loaded admin key");
-      // Auto-load Tang keys on startup (no activation needed in prototype)
-      if (keystore.load_tang_keys()) {
-        ESP_LOGI(TAG, "Loaded Tang keys - server ready");
-      } else {
-        ESP_LOGW(TAG, "Failed to load Tang keys");
-        success = false;
-      }
+    // Auto-load Tang keys on startup (no activation needed in prototype)
+    if (keystore.load_tang_keys()) {
+      ESP_LOGI(TAG, "Loaded Tang keys - server ready");
+    } else {
+      ESP_LOGW(TAG, "Failed to load Tang keys");
     }
   } else {
-    success = perform_initial_setup();
-  }
-
-  if (!success) {
-    ESP_LOGE(TAG, "ERROR: Setup failed. Nuking and restarting...");
-    keystore.nuke();
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
+    perform_initial_setup();
   }
 
   // Initialize Zero-Knowledge Authentication

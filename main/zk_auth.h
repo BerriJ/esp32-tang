@@ -1,6 +1,9 @@
 #ifndef ZK_AUTH_H
 #define ZK_AUTH_H
 
+#include "cryptoauthlib.h"
+#include "host/atca_host.h"
+#include "mbedtls/sha256.h"
 #include <cJSON.h>
 #include <esp_mac.h>
 #include <esp_system.h>
@@ -212,25 +215,143 @@ public:
     return true;
   }
 
-  // Verify a decrypted key against the stored password hash
+  void my_host_check_mac(const uint8_t *target_key,
+                         const uint8_t *chal_or_tempkey,
+                         const uint8_t *other_data, const uint8_t *sn,
+                         uint8_t *out_mac) {
+    uint8_t msg[88] = {0};
+
+    // 32 bytes: key[KeyID] or TempKey
+    memcpy(&msg[0], target_key, 32);
+
+    // 32 bytes: ClientChal or TempKey
+    memcpy(&msg[32], chal_or_tempkey, 32);
+
+    // 4 bytes: OtherData[0:3] (Opcode, Mode, KeyID)
+    memcpy(&msg[64], &other_data[0], 4);
+
+    // 8 bytes: Zeros
+    memset(&msg[68], 0, 8);
+
+    // 3 bytes: OtherData[4:6]
+    memcpy(&msg[76], &other_data[4], 3);
+
+    // 1 byte: SN[8]
+    msg[79] = sn[8];
+
+    // 4 bytes: OtherData[7:10]
+    memcpy(&msg[80], &other_data[7], 4);
+
+    // 2 bytes: SN[0:1]
+    msg[84] = sn[0];
+    msg[85] = sn[1];
+
+    // 2 bytes: OtherData[11:12]
+    memcpy(&msg[86], &other_data[11], 2);
+
+    // Hash the exact 88 bytes using the ESP32's hardware accelerator
+    mbedtls_sha256(msg, sizeof(msg), out_mac, 0);
+  }
+
+  // Helper to construct the 13 bytes of OtherData
+  void format_other_data(uint8_t opcode, uint8_t mode, uint16_t key_id,
+                         uint8_t *other_data) {
+    memset(other_data, 0, 13);
+    other_data[0] = opcode;
+    other_data[1] = mode;
+    other_data[2] = (uint8_t)(key_id & 0xFF);
+    other_data[3] = (uint8_t)((key_id >> 8) & 0xFF);
+  }
+
   bool verify_key(const uint8_t *received_key, size_t key_len) {
-    if (!password_set) {
-      printf("No password set for verification\n");
+    (void)key_len;
+    if (received_key == NULL)
+      return false;
+
+    ATCA_STATUS status;
+
+    uint8_t sn[ATCA_SERIAL_NUM_SIZE] = {0};
+    status = atcab_read_serial_number(sn);
+    if (status != ATCA_SUCCESS) {
+      printf("Failed to read Serial Number\n");
       return false;
     }
 
-    if (key_len != 32) {
-      printf("Invalid key length\n");
-      return false;
+    // ==========================================
+    // SLOT 13: No Nonce Required
+    // ==========================================
+    uint8_t challenge_32[32] = {0x11, 0x22, 0x33, 0x44};
+    uint8_t slot13_mac[32] = {0};
+    uint8_t other_data_13[13] = {0};
+
+    // MAC Mode 0x00 (Simulating a standard MAC with no SN)
+    format_other_data(0x08, 0x00, 13, other_data_13);
+
+    // Host manually calculates the expected MAC
+    my_host_check_mac(received_key, challenge_32, other_data_13, sn,
+                      slot13_mac);
+
+    // CRITICAL FIX: CheckMac Mode MUST be 0x00 here
+    // Bit 0 = 0 (Use ClientChal directly)
+    // Bit 1 = 0 (Use the password stored in Slot 13)
+    status = atcab_checkmac(0x00, 13, challenge_32, slot13_mac, other_data_13);
+    printf("Slot 13 CheckMac: %s (0x%02X)\n",
+           (status == ATCA_SUCCESS) ? "PASSED" : "FAILED", status);
+
+    // ==========================================
+    // SLOT 10: Requires Nonce
+    // ==========================================
+    uint8_t nonce_num_in[20] = {0xAA, 0xBB, 0xCC, 0xDD};
+    uint8_t rand_out[32] = {0};
+    uint8_t slot10_mac[32] = {0};
+    uint8_t other_data_10[13] = {0};
+    struct atca_temp_key temp_key;
+    memset(&temp_key, 0, sizeof(temp_key));
+
+    // MAC Mode 0x00 (Simulating a standard MAC with no SN)
+    format_other_data(0x08, 0x00, 10, other_data_10);
+
+    status = atcab_nonce_rand(nonce_num_in, rand_out);
+
+    // Print the nonce output for debugging
+    printf("Nonce RandOut: ");
+    for (int i = 0; i < 32; i++)
+      printf("%02x", rand_out[i]);
+    printf("\n");
+
+    if (status != ATCA_SUCCESS) {
+      printf("Slot 10 Nonce failed: 0x%02X\n", status);
+    } else {
+      // Compute the TempKey on the ESP32
+      struct atca_nonce_in_out nonce_params;
+      memset(&nonce_params, 0, sizeof(nonce_params));
+      nonce_params.mode = 0x00;
+      nonce_params.num_in = nonce_num_in;
+      nonce_params.rand_out = rand_out;
+      nonce_params.temp_key = &temp_key;
+
+      atcah_nonce(&nonce_params);
+
+      // Print temp_key for debugging
+      printf("TempKey: ");
+      for (int i = 0; i < 32; i++)
+        printf("%02x", temp_key.value[i]);
+      printf("\n");
+
+      // Host calculates MAC using the calculated TempKey as the challenge
+      my_host_check_mac(received_key, temp_key.value, other_data_10, sn,
+                        slot10_mac);
+
+      // CRITICAL FIX: CheckMac Mode MUST be 0x01 here
+      // Bit 0 = 1 (Use TempKey as the Challenge)
+      // Bit 1 = 0 (Use the password stored in Slot 10)
+      // Bit 2 = 0 (TempKey.SourceFlag is random)
+      status = atcab_checkmac(0x01, 10, NULL, slot10_mac, other_data_10);
+      printf("Slot 10 CheckMac: %s (0x%02X)\n",
+             (status == ATCA_SUCCESS) ? "PASSED" : "FAILED", status);
     }
 
-    // Constant-time comparison to prevent timing attacks
-    int result = 0;
-    for (size_t i = 0; i < 32; i++) {
-      result |= stored_password_hash[i] ^ received_key[i];
-    }
-
-    return (result == 0);
+    return (status == ATCA_SUCCESS);
   }
 
   // Process unlock request with ECIES tunnel
