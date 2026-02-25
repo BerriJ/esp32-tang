@@ -3,12 +3,10 @@
  */
 #include "TangServer.h"
 
-extern "C" void app_main(void)
-{
+extern "C" void app_main(void) {
   setup();
 
-  while (true)
-  {
+  while (true) {
     loop();
   }
 }

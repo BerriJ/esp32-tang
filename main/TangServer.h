@@ -1,30 +1,30 @@
 #ifndef TANG_SERVER_H
 #define TANG_SERVER_H
 
-#include <esp_wifi.h>
-#include <esp_event.h>
-#include <esp_log.h>
-#include <esp_http_server.h>
-#include <esp_task_wdt.h>
-#include <nvs_flash.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/event_groups.h>
-#include <string>
 #include "sdkconfig.h"
+#include <esp_event.h>
+#include <esp_http_server.h>
+#include <esp_log.h>
+#include <esp_task_wdt.h>
+#include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+#include <freertos/task.h>
+#include <nvs_flash.h>
+#include <string>
 
 static const char *TAG = "TangServer";
 
 // Include core components
+#include "atecc608a.h"
 #include "crypto.h"
 #include "encoding.h"
-#include "tang_storage.h"
-#include "atecc608a.h"
-#include "tang_handlers.h"
-#include "zk_auth.h"
-#include "zk_handlers.h"
 #include "provision.h"
 #include "provision_handlers.h"
+#include "tang_handlers.h"
+#include "tang_storage.h"
+#include "zk_auth.h"
+#include "zk_handlers.h"
 
 // --- Configuration ---
 const char *wifi_ssid = CONFIG_WIFI_SSID;
@@ -42,20 +42,15 @@ const int WIFI_CONNECTED_BIT = BIT0;
 
 // --- WiFi Event Handler ---
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
-  {
+                               int32_t event_id, void *event_data) {
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
     ESP_LOGI(TAG, "WiFi connecting...");
-  }
-  else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
-  {
+  } else if (event_base == WIFI_EVENT &&
+             event_id == WIFI_EVENT_STA_DISCONNECTED) {
     esp_wifi_connect();
     ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
-  }
-  else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
-  {
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
@@ -63,8 +58,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 // --- WiFi Setup ---
-void setup_wifi()
-{
+void setup_wifi() {
   // Initialize event group
   wifi_event_group = xEventGroupCreate();
 
@@ -82,15 +76,18 @@ void setup_wifi()
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
   // Register event handlers
-  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                             &wifi_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                             &wifi_event_handler, NULL));
 
   // Configure WiFi
   wifi_config_t wifi_config = {};
-  if (strlen(wifi_ssid) > 0)
-  {
-    strncpy((char *)wifi_config.sta.ssid, wifi_ssid, sizeof(wifi_config.sta.ssid));
-    strncpy((char *)wifi_config.sta.password, wifi_password, sizeof(wifi_config.sta.password));
+  if (strlen(wifi_ssid) > 0) {
+    strncpy((char *)wifi_config.sta.ssid, wifi_ssid,
+            sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, wifi_password,
+            sizeof(wifi_config.sta.password));
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -98,23 +95,19 @@ void setup_wifi()
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "Connecting to SSID: %s", wifi_ssid);
-  }
-  else
-  {
+  } else {
     ESP_LOGI(TAG, "No WiFi SSID configured");
   }
 }
 
 // --- Initial Setup ---
-bool perform_initial_setup()
-{
+bool perform_initial_setup() {
   ESP_LOGI(TAG, "=======================================================");
   ESP_LOGI(TAG, "FIRST BOOT: INITIAL SETUP REQUIRED");
   ESP_LOGI(TAG, "=======================================================");
 
   // Generate admin keypair
-  if (!P256::generate_keypair(keystore.admin_pub, keystore.admin_priv))
-  {
+  if (!P256::generate_keypair(keystore.admin_pub, keystore.admin_priv)) {
     ESP_LOGE(TAG, "ERROR: Failed to generate admin keypair");
     return false;
   }
@@ -126,14 +119,12 @@ bool perform_initial_setup()
   // Generate Tang keys
   ESP_LOGI(TAG, "Generating Tang keys (this may take a while)...");
 
-  if (!P256::generate_keypair(keystore.sig_pub, keystore.sig_priv))
-  {
+  if (!P256::generate_keypair(keystore.sig_pub, keystore.sig_priv)) {
     ESP_LOGE(TAG, "ERROR: Failed to generate signing key");
     return false;
   }
 
-  if (!P256::generate_keypair(keystore.exc_pub, keystore.exc_priv))
-  {
+  if (!P256::generate_keypair(keystore.exc_pub, keystore.exc_priv)) {
     ESP_LOGE(TAG, "ERROR: Failed to generate exchange key");
     return false;
   }
@@ -142,8 +133,7 @@ bool perform_initial_setup()
   keystore.save_admin_key();
 
   // Save Tang keys directly (no encryption in prototype)
-  if (!keystore.save_tang_keys())
-  {
+  if (!keystore.save_tang_keys()) {
     ESP_LOGE(TAG, "ERROR: Failed to save Tang keys");
     return false;
   }
@@ -155,27 +145,25 @@ bool perform_initial_setup()
   ESP_LOGI(TAG, "=======================================================");
 
   // Re-enable watchdog
-  esp_task_wdt_config_t wdt_config = {
-      .timeout_ms = 5000,
-      .idle_core_mask = (1 << 0) | (1 << 1),
-      .trigger_panic = false};
+  esp_task_wdt_config_t wdt_config = {.timeout_ms = 5000,
+                                      .idle_core_mask = (1 << 0) | (1 << 1),
+                                      .trigger_panic = false};
   esp_task_wdt_init(&wdt_config);
 
   return true;
 }
 
 // --- Setup HTTP Server Routes ---
-httpd_handle_t setup_http_server()
-{
+httpd_handle_t setup_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
   config.stack_size = 8192;
-  config.max_uri_handlers = 16; // Increased to accommodate all handlers including ZK
+  config.max_uri_handlers =
+      16; // Increased to accommodate all handlers including ZK
 
   httpd_handle_t server = NULL;
 
-  if (httpd_start(&server, &config) == ESP_OK)
-  {
+  if (httpd_start(&server, &config) == ESP_OK) {
     // Register provisioning handlers first (must be before ZK handlers)
     register_provision_handlers(server);
 
@@ -183,48 +171,41 @@ httpd_handle_t setup_http_server()
     register_zk_handlers(server);
 
     // Register Tang protocol handlers
-    httpd_uri_t adv_uri = {
-        .uri = "/adv",
-        .method = HTTP_GET,
-        .handler = handle_adv,
-        .user_ctx = NULL};
+    httpd_uri_t adv_uri = {.uri = "/adv",
+                           .method = HTTP_GET,
+                           .handler = handle_adv,
+                           .user_ctx = NULL};
     httpd_register_uri_handler(server, &adv_uri);
 
-    httpd_uri_t adv_uri_slash = {
-        .uri = "/adv/",
-        .method = HTTP_GET,
-        .handler = handle_adv,
-        .user_ctx = NULL};
+    httpd_uri_t adv_uri_slash = {.uri = "/adv/",
+                                 .method = HTTP_GET,
+                                 .handler = handle_adv,
+                                 .user_ctx = NULL};
     httpd_register_uri_handler(server, &adv_uri_slash);
 
-    httpd_uri_t rec_uri = {
-        .uri = "/rec",
-        .method = HTTP_POST,
-        .handler = handle_rec,
-        .user_ctx = NULL};
+    httpd_uri_t rec_uri = {.uri = "/rec",
+                           .method = HTTP_POST,
+                           .handler = handle_rec,
+                           .user_ctx = NULL};
     httpd_register_uri_handler(server, &rec_uri);
 
-    httpd_uri_t config_uri = {
-        .uri = "/config",
-        .method = HTTP_GET,
-        .handler = handle_config,
-        .user_ctx = NULL};
+    httpd_uri_t config_uri = {.uri = "/config",
+                              .method = HTTP_GET,
+                              .handler = handle_config,
+                              .user_ctx = NULL};
     httpd_register_uri_handler(server, &config_uri);
 
-    httpd_uri_t reboot_uri = {
-        .uri = "/reboot",
-        .method = HTTP_GET,
-        .handler = handle_reboot,
-        .user_ctx = NULL};
+    httpd_uri_t reboot_uri = {.uri = "/reboot",
+                              .method = HTTP_GET,
+                              .handler = handle_reboot,
+                              .user_ctx = NULL};
     httpd_register_uri_handler(server, &reboot_uri);
 
     // Register custom error handler for 404
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
 
     ESP_LOGI(TAG, "HTTP server listening on port 80");
-  }
-  else
-  {
+  } else {
     ESP_LOGE(TAG, "Failed to start HTTP server");
   }
 
@@ -232,14 +213,13 @@ httpd_handle_t setup_http_server()
 }
 
 // --- Main Setup ---
-void setup()
-{
+void setup() {
   ESP_LOGI(TAG, "\n\nESP32 Tang Server Starting...");
 
   // Initialize NVS (required before any storage operations)
   esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-  {
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+      ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
     ret = nvs_flash_init();
   }
@@ -247,43 +227,32 @@ void setup()
   ESP_LOGI(TAG, "NVS initialized");
 
   // Initialize ATECC608A
-  if (atecc608B_init())
-  {
+  if (atecc608B_init()) {
     atecc608B_print_config();
-  }
-  else
-  {
+  } else {
     ESP_LOGW(TAG, "WARNING: ATECC608A initialization failed");
   }
 
   // Load or initialize configuration
   bool success;
-  if (keystore.is_configured())
-  {
+  if (keystore.is_configured()) {
     ESP_LOGI(TAG, "Found existing configuration");
     success = keystore.load_admin_key();
-    if (success)
-    {
+    if (success) {
       ESP_LOGI(TAG, "Loaded admin key");
       // Auto-load Tang keys on startup (no activation needed in prototype)
-      if (keystore.load_tang_keys())
-      {
+      if (keystore.load_tang_keys()) {
         ESP_LOGI(TAG, "Loaded Tang keys - server ready");
-      }
-      else
-      {
+      } else {
         ESP_LOGW(TAG, "Failed to load Tang keys");
         success = false;
       }
     }
-  }
-  else
-  {
+  } else {
     success = perform_initial_setup();
   }
 
-  if (!success)
-  {
+  if (!success) {
     ESP_LOGE(TAG, "ERROR: Setup failed. Nuking and restarting...");
     keystore.nuke();
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -292,30 +261,23 @@ void setup()
 
   // Initialize Zero-Knowledge Authentication
   ESP_LOGI(TAG, "Initializing Zero-Knowledge Authentication...");
-  if (zk_auth.init())
-  {
+  if (zk_auth.init()) {
     ESP_LOGI(TAG, "ZK Auth initialized successfully");
 
     // Set test password
-    if (zk_auth.set_password("password"))
-    {
+    if (zk_auth.set_password("password")) {
       ESP_LOGI(TAG, "Test password set successfully");
-    }
-    else
-    {
+    } else {
       ESP_LOGW(TAG, "Failed to set test password");
     }
-  }
-  else
-  {
+  } else {
     ESP_LOGW(TAG, "ZK Auth initialization failed");
   }
 
   setup_wifi();
   server_http = setup_http_server();
 
-  if (server_http)
-  {
+  if (server_http) {
     ESP_LOGI(TAG, "HTTP server listening on port 80");
     ESP_LOGI(TAG, "  - ZK Auth UI: http://<ip>/");
     ESP_LOGI(TAG, "  - Tang Server: http://<ip>/adv");
@@ -323,8 +285,7 @@ void setup()
 }
 
 // --- Main Loop ---
-void loop()
-{
+void loop() {
   // Just delay - HTTP server handles requests in its own task
   vTaskDelay(pdMS_TO_TICKS(1000));
 }

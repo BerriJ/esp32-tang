@@ -10,7 +10,7 @@
                 "${workspaceFolder}/managed_components/**",
                 "${workspaceFolder}/managed_components/esp-cryptoauthlib/**"
             ],
-            "compilerPath": "/nix/store/rvlrrbyqyhdkvc527g5qia3mqsghfajh-esp-clang-esp-idf-v5.5.2/bin/clang"
+            "compilerPath": "/nix/store/x45d95acx6rybkb5cidrxxffval9k2pg-gcc-wrapper-14.3.0/bin/gcc"
         }
     ],
     "version": 4

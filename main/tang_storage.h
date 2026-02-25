@@ -1,19 +1,18 @@
 #ifndef TANG_STORAGE_H
 #define TANG_STORAGE_H
 
-#include <nvs_flash.h>
-#include <nvs.h>
-#include <esp_log.h>
-#include <esp_random.h>
-#include <cstring>
 #include "crypto.h"
 #include "encoding.h"
+#include <cstring>
+#include <esp_log.h>
+#include <esp_random.h>
+#include <nvs.h>
+#include <nvs_flash.h>
 
 static const char *TAG_STORAGE = "tang_storage";
 
 // --- Key Storage & Management ---
-class TangKeyStore
-{
+class TangKeyStore {
 private:
   // No longer need salt for password-based encryption
 
@@ -28,12 +27,10 @@ public:
   uint8_t admin_priv[P256_PRIVATE_KEY_SIZE];
   uint8_t admin_pub[P256_PUBLIC_KEY_SIZE];
 
-  bool is_configured()
-  {
+  bool is_configured() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       return false;
     }
 
@@ -45,12 +42,10 @@ public:
     return configured;
   }
 
-  bool load_admin_key()
-  {
+  bool load_admin_key() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "Failed to open NVS: %s", esp_err_to_name(err));
       return false;
     }
@@ -59,8 +54,7 @@ public:
     err = nvs_get_blob(handle, "admin_key", admin_priv, &len);
     bool success = (err == ESP_OK && len == P256_PRIVATE_KEY_SIZE);
 
-    if (success)
-    {
+    if (success) {
       P256::compute_public_key(admin_priv, admin_pub);
     }
 
@@ -68,20 +62,17 @@ public:
     return success;
   }
 
-  bool save_admin_key()
-  {
+  bool save_admin_key() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "Failed to open NVS: %s", esp_err_to_name(err));
       return false;
     }
 
     // Save admin key
     err = nvs_set_blob(handle, "admin_key", admin_priv, P256_PRIVATE_KEY_SIZE);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       nvs_close(handle);
       return false;
     }
@@ -92,28 +83,24 @@ public:
   }
 
   // Save Tang keys directly to NVS (no encryption)
-  bool save_tang_keys()
-  {
+  bool save_tang_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "Failed to open NVS: %s", esp_err_to_name(err));
       return false;
     }
 
     // Save signing key
     err = nvs_set_blob(handle, "tang_sig_key", sig_priv, P256_PRIVATE_KEY_SIZE);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       nvs_close(handle);
       return false;
     }
 
     // Save exchange key
     err = nvs_set_blob(handle, "tang_exc_key", exc_priv, P256_PRIVATE_KEY_SIZE);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       nvs_close(handle);
       return false;
     }
@@ -124,12 +111,10 @@ public:
   }
 
   // Load Tang keys directly from NVS (no decryption)
-  bool load_tang_keys()
-  {
+  bool load_tang_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "Failed to open NVS: %s", esp_err_to_name(err));
       return false;
     }
@@ -137,8 +122,7 @@ public:
     // Load signing key
     size_t len = P256_PRIVATE_KEY_SIZE;
     err = nvs_get_blob(handle, "tang_sig_key", sig_priv, &len);
-    if (err != ESP_OK || len != P256_PRIVATE_KEY_SIZE)
-    {
+    if (err != ESP_OK || len != P256_PRIVATE_KEY_SIZE) {
       nvs_close(handle);
       return false;
     }
@@ -147,8 +131,7 @@ public:
     // Load exchange key
     len = P256_PRIVATE_KEY_SIZE;
     err = nvs_get_blob(handle, "tang_exc_key", exc_priv, &len);
-    if (err != ESP_OK || len != P256_PRIVATE_KEY_SIZE)
-    {
+    if (err != ESP_OK || len != P256_PRIVATE_KEY_SIZE) {
       nvs_close(handle);
       return false;
     }
@@ -158,20 +141,17 @@ public:
     return true;
   }
 
-  void clear_tang_keys()
-  {
+  void clear_tang_keys() {
     memset(sig_priv, 0, P256_PRIVATE_KEY_SIZE);
     memset(sig_pub, 0, P256_PUBLIC_KEY_SIZE);
     memset(exc_priv, 0, P256_PRIVATE_KEY_SIZE);
     memset(exc_pub, 0, P256_PUBLIC_KEY_SIZE);
   }
 
-  void nuke()
-  {
+  void nuke() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "Failed to open NVS: %s", esp_err_to_name(err));
       return;
     }

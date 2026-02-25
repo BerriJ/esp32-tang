@@ -1,19 +1,19 @@
 #ifndef ZK_AUTH_H
 #define ZK_AUTH_H
 
-#include <mbedtls/ecdh.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/sha256.h>
-#include <mbedtls/aes.h>
-#include <mbedtls/md.h>
-#include <mbedtls/ecp.h>
-#include <mbedtls/pkcs5.h>
-#include <esp_system.h>
-#include <esp_mac.h>
 #include <cJSON.h>
-#include <string.h>
+#include <esp_mac.h>
+#include <esp_system.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/ecdh.h>
+#include <mbedtls/ecp.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/md.h>
+#include <mbedtls/pkcs5.h>
+#include <mbedtls/sha256.h>
 #include <stdio.h>
+#include <string.h>
 
 // Zero-Knowledge Authentication Module
 // Implements Client-Side KDF + ECIES Tunnel for ESP32-C6
@@ -21,11 +21,11 @@
 //
 // Encryption: AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
 // - Provides confidentiality (CBC) + authenticity (HMAC)
-// - Blob format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80 bytes
+// - Blob format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80
+// bytes
 // - HMAC verified BEFORE decryption (prevents padding oracle attacks)
 
-class ZKAuth
-{
+class ZKAuth {
 private:
   mbedtls_ecp_group grp;
   mbedtls_mpi device_private_d;
@@ -41,25 +41,20 @@ private:
   bool unlocked = false; // Set to true after successful authentication
 
   // Convert binary to hex string
-  void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex)
-  {
-    for (size_t i = 0; i < bin_len; i++)
-    {
+  void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex) {
+    for (size_t i = 0; i < bin_len; i++) {
       sprintf(hex + (i * 2), "%02x", bin[i]);
     }
     hex[bin_len * 2] = '\0';
   }
 
   // Convert hex string to binary
-  bool hex_to_bin(const char *hex, uint8_t *bin, size_t bin_len)
-  {
+  bool hex_to_bin(const char *hex, uint8_t *bin, size_t bin_len) {
     if (strlen(hex) != bin_len * 2)
       return false;
 
-    for (size_t i = 0; i < bin_len; i++)
-    {
-      if (sscanf(hex + (i * 2), "%2hhx", &bin[i]) != 1)
-      {
+    for (size_t i = 0; i < bin_len; i++) {
+      if (sscanf(hex + (i * 2), "%2hhx", &bin[i]) != 1) {
         return false;
       }
     }
@@ -67,8 +62,7 @@ private:
   }
 
 public:
-  ZKAuth() : initialized(false), password_set(false), unlocked(false)
-  {
+  ZKAuth() : initialized(false), password_set(false), unlocked(false) {
     mbedtls_ecp_group_init(&grp);
     mbedtls_mpi_init(&device_private_d);
     mbedtls_ecp_point_init(&device_public_Q);
@@ -76,8 +70,7 @@ public:
     mbedtls_ctr_drbg_init(&ctr_drbg);
   }
 
-  ~ZKAuth()
-  {
+  ~ZKAuth() {
     mbedtls_ecp_group_free(&grp);
     mbedtls_mpi_free(&device_private_d);
     mbedtls_ecp_point_free(&device_public_Q);
@@ -86,53 +79,40 @@ public:
   }
 
   // Initialize the ZK authentication system
-  bool init()
-  {
+  bool init() {
     if (initialized)
       return true;
 
     // Seed the random number generator
     const char *pers = "zk_auth_esp32";
-    int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func,
-                                    &entropy,
-                                    (const unsigned char *)pers,
-                                    strlen(pers));
-    if (ret != 0)
-    {
+    int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+                                    (const unsigned char *)pers, strlen(pers));
+    if (ret != 0) {
       printf("mbedtls_ctr_drbg_seed failed: -0x%04x\n", -ret);
       return false;
     }
 
     // Setup ECC group for NIST P-256 (secp256r1)
     ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-    if (ret != 0)
-    {
+    if (ret != 0) {
       printf("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
       return false;
     }
 
     // Generate device keypair
-    ret = mbedtls_ecdh_gen_public(&grp,
-                                  &device_private_d,
-                                  &device_public_Q,
-                                  mbedtls_ctr_drbg_random,
-                                  &ctr_drbg);
-    if (ret != 0)
-    {
+    ret = mbedtls_ecdh_gen_public(&grp, &device_private_d, &device_public_Q,
+                                  mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (ret != 0) {
       printf("mbedtls_ecdh_gen_public failed: -0x%04x\n", -ret);
       return false;
     }
 
     // Export public key to uncompressed format (0x04 + X + Y)
     size_t olen;
-    ret = mbedtls_ecp_point_write_binary(&grp,
-                                         &device_public_Q,
-                                         MBEDTLS_ECP_PF_UNCOMPRESSED,
-                                         &olen,
-                                         device_public_key,
-                                         sizeof(device_public_key));
-    if (ret != 0 || olen != 65)
-    {
+    ret = mbedtls_ecp_point_write_binary(
+        &grp, &device_public_Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen,
+        device_public_key, sizeof(device_public_key));
+    if (ret != 0 || olen != 65) {
       printf("mbedtls_ecp_point_write_binary failed: -0x%04x\n", -ret);
       return false;
     }
@@ -141,8 +121,7 @@ public:
 
     printf("\n=== ZK Authentication Initialized ===\n");
     printf("Public Key: ");
-    for (int i = 0; i < 65; i++)
-    {
+    for (int i = 0; i < 65; i++) {
       printf("%02x", device_public_key[i]);
     }
     printf("\n");
@@ -152,8 +131,7 @@ public:
   }
 
   // Get device identity (for /api/identity endpoint)
-  char *get_identity_json()
-  {
+  char *get_identity_json() {
     char pubkey_hex[131]; // 65 bytes * 2 + null
     bin_to_hex(device_public_key, 65, pubkey_hex);
 
@@ -173,21 +151,20 @@ public:
   }
 
   // ⚠️ TESTING ONLY - DO NOT USE IN PRODUCTION ⚠️
-  // This function accepts a plaintext password and computes PBKDF2 on the device.
-  // This violates the zero-knowledge principle!
-  // In production, use an activation endpoint that receives the pre-computed hash
-  // from the browser, so the device never sees the plaintext password.
-  // Must match browser: PBKDF2(password, MAC_ADDRESS, 10000, SHA256)
-  bool set_password(const char *password)
-  {
-    if (!initialized)
-    {
+  // This function accepts a plaintext password and computes PBKDF2 on the
+  // device. This violates the zero-knowledge principle! In production, use an
+  // activation endpoint that receives the pre-computed hash from the browser,
+  // so the device never sees the plaintext password. Must match browser:
+  // PBKDF2(password, MAC_ADDRESS, 10000, SHA256)
+  bool set_password(const char *password) {
+    if (!initialized) {
       printf("ZKAuth not initialized\n");
       return false;
     }
 
     // ⚠️ TESTING ONLY: Computing PBKDF2 on device
-    // In production, this should be done client-side and only the hash sent to device
+    // In production, this should be done client-side and only the hash sent to
+    // device
 
     // Use MAC address as salt
     uint8_t mac[6];
@@ -196,27 +173,26 @@ public:
     mbedtls_md_context_t md_ctx;
     mbedtls_md_init(&md_ctx);
 
-    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    const mbedtls_md_info_t *md_info =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     int ret = mbedtls_md_setup(&md_ctx, md_info, 1); // 1 = HMAC
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       mbedtls_md_free(&md_ctx);
       printf("mbedtls_md_setup failed: -0x%04x\n", -ret);
       return false;
     }
 
-    ret = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
-                                        (const unsigned char *)password, strlen(password),
-                                        mac, 6, // Use MAC address as salt
-                                        10000,  // iterations (must match browser)
-                                        32,     // key length
-                                        stored_password_hash);
+    ret = mbedtls_pkcs5_pbkdf2_hmac_ext(
+        MBEDTLS_MD_SHA256, (const unsigned char *)password, strlen(password),
+        mac, 6, // Use MAC address as salt
+        10000,  // iterations (must match browser)
+        32,     // key length
+        stored_password_hash);
 
     mbedtls_md_free(&md_ctx);
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       printf("mbedtls_pkcs5_pbkdf2_hmac_ext failed: -0x%04x\n", -ret);
       return false;
     }
@@ -237,24 +213,20 @@ public:
   }
 
   // Verify a decrypted key against the stored password hash
-  bool verify_key(const uint8_t *received_key, size_t key_len)
-  {
-    if (!password_set)
-    {
+  bool verify_key(const uint8_t *received_key, size_t key_len) {
+    if (!password_set) {
       printf("No password set for verification\n");
       return false;
     }
 
-    if (key_len != 32)
-    {
+    if (key_len != 32) {
       printf("Invalid key length\n");
       return false;
     }
 
     // Constant-time comparison to prevent timing attacks
     int result = 0;
-    for (size_t i = 0; i < 32; i++)
-    {
+    for (size_t i = 0; i < 32; i++) {
       result |= stored_password_hash[i] ^ received_key[i];
     }
 
@@ -262,22 +234,18 @@ public:
   }
 
   // Process unlock request with ECIES tunnel
-  char *process_unlock(const char *json_payload, bool *success_out)
-  {
+  char *process_unlock(const char *json_payload, bool *success_out) {
     *success_out = false;
 
-    if (!initialized)
-    {
+    if (!initialized) {
       return strdup("{\"error\":\"Not initialized\"}");
     }
 
     // Parse JSON
     cJSON *doc = cJSON_Parse(json_payload);
-    if (doc == NULL)
-    {
+    if (doc == NULL) {
       const char *error_ptr = cJSON_GetErrorPtr();
-      if (error_ptr != NULL)
-      {
+      if (error_ptr != NULL) {
         printf("JSON parse error before: %s\n", error_ptr);
       }
       return strdup("{\"error\":\"Invalid JSON\"}");
@@ -294,8 +262,7 @@ public:
     if (cJSON_IsString(encrypted_blob_item))
       encrypted_blob_hex = encrypted_blob_item->valuestring;
 
-    if (!client_pub_hex || !encrypted_blob_hex)
-    {
+    if (!client_pub_hex || !encrypted_blob_hex) {
       cJSON_Delete(doc);
       return strdup("{\"error\":\"Missing required fields\"}");
     }
@@ -307,8 +274,7 @@ public:
     // Convert client public key from hex
     size_t client_pub_len = strlen(client_pub_hex) / 2;
     uint8_t *client_pub_bin = (uint8_t *)malloc(client_pub_len);
-    if (!hex_to_bin(client_pub_hex, client_pub_bin, client_pub_len))
-    {
+    if (!hex_to_bin(client_pub_hex, client_pub_bin, client_pub_len)) {
       free(client_pub_bin);
       cJSON_Delete(doc);
       return strdup("{\"error\":\"Invalid client public key format\"}");
@@ -318,14 +284,11 @@ public:
     mbedtls_ecp_point client_point;
     mbedtls_ecp_point_init(&client_point);
 
-    int ret = mbedtls_ecp_point_read_binary(&grp,
-                                            &client_point,
-                                            client_pub_bin,
+    int ret = mbedtls_ecp_point_read_binary(&grp, &client_point, client_pub_bin,
                                             client_pub_len);
     free(client_pub_bin);
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       mbedtls_ecp_point_free(&client_point);
       cJSON_Delete(doc);
       printf("Failed to parse client key: -0x%04x\n", -ret);
@@ -336,17 +299,13 @@ public:
     mbedtls_mpi shared_secret_mpi;
     mbedtls_mpi_init(&shared_secret_mpi);
 
-    ret = mbedtls_ecdh_compute_shared(&grp,
-                                      &shared_secret_mpi,
-                                      &client_point,
+    ret = mbedtls_ecdh_compute_shared(&grp, &shared_secret_mpi, &client_point,
                                       &device_private_d,
-                                      mbedtls_ctr_drbg_random,
-                                      &ctr_drbg);
+                                      mbedtls_ctr_drbg_random, &ctr_drbg);
 
     mbedtls_ecp_point_free(&client_point);
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       mbedtls_mpi_free(&shared_secret_mpi);
       cJSON_Delete(doc);
       printf("ECDH computation failed: -0x%04x\n", -ret);
@@ -358,8 +317,7 @@ public:
     ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 32);
     mbedtls_mpi_free(&shared_secret_mpi);
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       cJSON_Delete(doc);
       printf("Shared secret export failed: -0x%04x\n", -ret);
       return strdup("{\"error\":\"Shared secret export failed\"}");
@@ -372,7 +330,8 @@ public:
 
     // Derive separate keys for encryption and authentication
     // This prevents key reuse vulnerabilities
-    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    const mbedtls_md_info_t *md_info =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
 
     // Encryption key: SHA256("encryption" || shared_secret)
     uint8_t enc_key[32];
@@ -406,11 +365,11 @@ public:
     memset(shared_secret_raw, 0, 32);
 
     // Convert encrypted blob from hex
-    // Format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80 bytes
+    // Format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80
+    // bytes
     size_t encrypted_len = strlen(encrypted_blob_hex) / 2;
     uint8_t *encrypted_blob = (uint8_t *)malloc(encrypted_len);
-    if (!hex_to_bin(encrypted_blob_hex, encrypted_blob, encrypted_len))
-    {
+    if (!hex_to_bin(encrypted_blob_hex, encrypted_blob, encrypted_len)) {
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       memset(mac_key, 0, 32);
@@ -419,8 +378,7 @@ public:
     }
 
     // Verify blob length: IV(16) + Ciphertext(32) + HMAC(32) = 80 bytes
-    if (encrypted_len != 80)
-    {
+    if (encrypted_len != 80) {
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       memset(mac_key, 0, 32);
@@ -447,10 +405,10 @@ public:
     // ⚠️ CRITICAL: Verify HMAC BEFORE decrypting
     // This prevents padding oracle attacks and ensures data authenticity
     uint8_t computed_hmac[32];
-    ret = mbedtls_md_hmac(md_info, mac_key, 32, encrypted_blob, 48, computed_hmac);
+    ret = mbedtls_md_hmac(md_info, mac_key, 32, encrypted_blob, 48,
+                          computed_hmac);
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       memset(mac_key, 0, 32);
@@ -466,21 +424,21 @@ public:
 
     // Constant-time comparison to prevent timing attacks
     int hmac_result = 0;
-    for (int i = 0; i < 32; i++)
-    {
+    for (int i = 0; i < 32; i++) {
       hmac_result |= received_hmac[i] ^ computed_hmac[i];
     }
 
     // Wipe MAC key after verification
     memset(mac_key, 0, 32);
 
-    if (hmac_result != 0)
-    {
+    if (hmac_result != 0) {
       free(encrypted_blob);
       memset(enc_key, 0, 32);
       cJSON_Delete(doc);
-      printf("❌ HMAC verification FAILED - ciphertext was modified or wrong key!\n");
-      return strdup("{\"error\":\"Authentication failed - data tampered or wrong password\"}");
+      printf("❌ HMAC verification FAILED - ciphertext was modified or wrong "
+             "key!\n");
+      return strdup("{\"error\":\"Authentication failed - data tampered or "
+                    "wrong password\"}");
     }
 
     printf("✅ HMAC verified - data is authentic\n");
@@ -490,8 +448,7 @@ public:
     mbedtls_aes_init(&aes);
 
     ret = mbedtls_aes_setkey_dec(&aes, enc_key, 256);
-    if (ret != 0)
-    {
+    if (ret != 0) {
       mbedtls_aes_free(&aes);
       free(encrypted_blob);
       memset(enc_key, 0, 32);
@@ -504,8 +461,7 @@ public:
     uint8_t iv_copy[16];
     memcpy(iv_copy, iv, 16); // CBC mode modifies IV
 
-    ret = mbedtls_aes_crypt_cbc(&aes,
-                                MBEDTLS_AES_DECRYPT,
+    ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT,
                                 32,              // data length
                                 iv_copy,         // IV (will be modified)
                                 ciphertext,      // input
@@ -515,8 +471,7 @@ public:
     free(encrypted_blob);
     memset(enc_key, 0, 32);
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
       free(decrypted_data);
       cJSON_Delete(doc);
       printf("AES decrypt failed: -0x%04x\n", -ret);
@@ -526,8 +481,7 @@ public:
     // Extract the derived key (PBKDF2 hash, 32 bytes)
     printf("\n=== DECRYPTED DERIVED KEY ===\n");
     printf("Key (hex): ");
-    for (size_t i = 0; i < 32; i++)
-    {
+    for (size_t i = 0; i < 32; i++) {
       printf("%02x", decrypted_data[i]);
     }
     printf("\n");
@@ -539,14 +493,11 @@ public:
     cJSON *resp_doc = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_doc, "success", verification_result);
 
-    if (verification_result)
-    {
+    if (verification_result) {
       printf("✅ Password verification SUCCESSFUL\n");
       unlocked = true;
       cJSON_AddStringToObject(resp_doc, "message", "Unlock successful");
-    }
-    else
-    {
+    } else {
       printf("❌ Password verification FAILED\n");
       unlocked = false;
       cJSON_AddStringToObject(resp_doc, "error", "Invalid password");
@@ -565,10 +516,7 @@ public:
   }
 
   // Check if device is unlocked
-  bool is_unlocked() const
-  {
-    return unlocked;
-  }
+  bool is_unlocked() const { return unlocked; }
 
   // Lock the device
   void lock() { unlocked = false; }
