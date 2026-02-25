@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "NixOS",
+            "compileCommands": [
+                "${workspaceFolder}/build/compile_commands.json"
+            ],
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/managed_components/**",
+                "${workspaceFolder}/managed_components/esp-cryptoauthlib/**"
+            ],
+            "compilerPath": "/nix/store/rvlrrbyqyhdkvc527g5qia3mqsghfajh-esp-clang-esp-idf-v5.5.2/bin/clang"
+        }
+    ],
+    "version": 4
+}
