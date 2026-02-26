@@ -260,6 +260,12 @@ public:
 
     ATCA_STATUS status;
 
+    bool latch_status = false;
+    status = atcab_info_get_latch(&latch_status);
+
+    printf("Device Latch Status: %s (0x%02X)\n",
+           latch_status ? "LATCHED" : "UNLATCHED", status);
+
     uint8_t sn[ATCA_SERIAL_NUM_SIZE] = {0};
     status = atcab_read_serial_number(sn);
     if (status != ATCA_SUCCESS) {
@@ -340,6 +346,17 @@ public:
         printf("Slot 10 CheckMac: HARDWARE ERROR (0x%02X)\n", status);
       }
     }
+    status = atcab_info_set_latch(true);
+
+    if (status == ATCA_SUCCESS) {
+      printf("Device latched successfully\n");
+    } else {
+      printf("Failed to latch device: 0x%02X\n", status);
+    }
+
+    atcab_info_get_latch(&latch_status);
+    printf("Device Latch Status after setting: %s (0x%02X)\n",
+           latch_status ? "LATCHED" : "UNLATCHED", status);
 
     return (status == ATCA_SUCCESS);
   }
