@@ -183,7 +183,7 @@ public:
     status = atcab_info_get_latch(&latch_status);
 
     printf("Device Latch Status: %s (0x%02X)\n",
-           latch_status ? "LATCHED" : "UNLATCHED", status);
+           latch_status ? "LATCHED" : "UNLATCHED", latch_status);
 
     uint8_t sn[ATCA_SERIAL_NUM_SIZE] = {0};
     status = atcab_read_serial_number(sn);
@@ -223,11 +223,6 @@ public:
     status = atcab_nonce_rand(nonce_num_in, rand_out);
 
     // Print the nonce output for debugging
-    printf("Nonce RandOut: ");
-    for (int i = 0; i < 32; i++)
-      printf("%02x", rand_out[i]);
-    printf("\n");
-
     if (status != ATCA_SUCCESS) {
       printf("Slot 10 Nonce failed: 0x%02X\n", status);
     } else {
@@ -241,20 +236,11 @@ public:
 
       atcah_nonce(&nonce_params);
 
-      // Print temp_key for debugging
-      printf("TempKey: ");
-      for (int i = 0; i < 32; i++)
-        printf("%02x", temp_key.value[i]);
-      printf("\n");
-
       // Host calculates MAC using the calculated TempKey as the challenge
       my_host_check_mac(received_key, temp_key.value, other_data_10, sn,
                         slot10_mac);
 
-      // CRITICAL FIX: CheckMac Mode MUST be 0x01 here
-      // Bit 0 = 1 (Use TempKey as the Challenge)
-      // Bit 1 = 0 (Use the password stored in Slot 10)
-      // Bit 2 = 0 (TempKey.SourceFlag is random)
+      // See section 11.2 of the ATECC608B datasheet CheckMac message format
       status = atcab_checkmac(0x01, 10, NULL, slot10_mac, other_data_10);
       if (status == ATCA_SUCCESS) {
         printf("Slot 10 CheckMac: PASSED\n");
@@ -267,15 +253,13 @@ public:
     }
     status = atcab_info_set_latch(true);
 
-    if (status == ATCA_SUCCESS) {
-      printf("Device latched successfully\n");
-    } else {
+    if (status != ATCA_SUCCESS) {
       printf("Failed to latch device: 0x%02X\n", status);
     }
 
     atcab_info_get_latch(&latch_status);
     printf("Device Latch Status after setting: %s (0x%02X)\n",
-           latch_status ? "LATCHED" : "UNLATCHED", status);
+           latch_status ? "LATCHED" : "UNLATCHED", latch_status);
 
     return (status == ATCA_SUCCESS);
   }
