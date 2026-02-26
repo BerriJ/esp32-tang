@@ -253,16 +253,6 @@ public:
     mbedtls_sha256(msg, sizeof(msg), out_mac, 0);
   }
 
-  // Helper to construct the 13 bytes of OtherData
-  void format_other_data(uint8_t opcode, uint8_t mode, uint16_t key_id,
-                         uint8_t *other_data) {
-    memset(other_data, 0, 13);
-    other_data[0] = opcode;
-    other_data[1] = mode;
-    other_data[2] = (uint8_t)(key_id & 0xFF);
-    other_data[3] = (uint8_t)((key_id >> 8) & 0xFF);
-  }
-
   bool verify_key(const uint8_t *received_key, size_t key_len) {
     (void)key_len;
     if (received_key == NULL)
@@ -282,10 +272,7 @@ public:
     // ==========================================
     uint8_t challenge_32[32] = {0x11, 0x22, 0x33, 0x44};
     uint8_t slot13_mac[32] = {0};
-    uint8_t other_data_13[13] = {0};
-
-    // MAC Mode 0x00 (Simulating a standard MAC with no SN)
-    format_other_data(0x08, 0x00, 13, other_data_13);
+    uint8_t other_data_13[13] = "TangActivate";
 
     // Host manually calculates the expected MAC
     my_host_check_mac(received_key, challenge_32, other_data_13, sn,
@@ -307,9 +294,6 @@ public:
     uint8_t other_data_10[13] = {0};
     struct atca_temp_key temp_key;
     memset(&temp_key, 0, sizeof(temp_key));
-
-    // MAC Mode 0x00 (Simulating a standard MAC with no SN)
-    format_other_data(0x08, 0x00, 10, other_data_10);
 
     status = atcab_nonce_rand(nonce_num_in, rand_out);
 
@@ -347,8 +331,14 @@ public:
       // Bit 1 = 0 (Use the password stored in Slot 10)
       // Bit 2 = 0 (TempKey.SourceFlag is random)
       status = atcab_checkmac(0x01, 10, NULL, slot10_mac, other_data_10);
-      printf("Slot 10 CheckMac: %s (0x%02X)\n",
-             (status == ATCA_SUCCESS) ? "PASSED" : "FAILED", status);
+      if (status == ATCA_SUCCESS) {
+        printf("Slot 10 CheckMac: PASSED\n");
+      } else if (status == (ATCA_STATUS)ATCA_CHECKMAC_VERIFY_FAILED) {
+        // 0xD1 (-47 / 0xFFFFFFD1) see atca_status.h
+        printf("Slot 10 CheckMac: ACCESS DENIED (Wrong Password)\n");
+      } else {
+        printf("Slot 10 CheckMac: HARDWARE ERROR (0x%02X)\n", status);
+      }
     }
 
     return (status == ATCA_SUCCESS);
