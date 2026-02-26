@@ -235,13 +235,6 @@ void setup() {
   ESP_LOGI(TAG, "Initializing Zero-Knowledge Authentication...");
   if (zk_auth.init()) {
     ESP_LOGI(TAG, "ZK Auth initialized successfully");
-
-    // Set test password
-    if (zk_auth.set_password("password")) {
-      ESP_LOGI(TAG, "Test password set successfully");
-    } else {
-      ESP_LOGW(TAG, "Failed to set test password");
-    }
   } else {
     ESP_LOGW(TAG, "ZK Auth initialization failed");
   }

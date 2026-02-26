@@ -153,102 +153,21 @@ public:
     return json_str;
   }
 
-  // ⚠️ TESTING ONLY - DO NOT USE IN PRODUCTION ⚠️
-  // This function accepts a plaintext password and computes PBKDF2 on the
-  // device. This violates the zero-knowledge principle! In production, use an
-  // activation endpoint that receives the pre-computed hash from the browser,
-  // so the device never sees the plaintext password. Must match browser:
-  // PBKDF2(password, MAC_ADDRESS, 10000, SHA256)
-  bool set_password(const char *password) {
-    if (!initialized) {
-      printf("ZKAuth not initialized\n");
-      return false;
-    }
-
-    // ⚠️ TESTING ONLY: Computing PBKDF2 on device
-    // In production, this should be done client-side and only the hash sent to
-    // device
-
-    // Use MAC address as salt
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-
-    mbedtls_md_context_t md_ctx;
-    mbedtls_md_init(&md_ctx);
-
-    const mbedtls_md_info_t *md_info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    int ret = mbedtls_md_setup(&md_ctx, md_info, 1); // 1 = HMAC
-
-    if (ret != 0) {
-      mbedtls_md_free(&md_ctx);
-      printf("mbedtls_md_setup failed: -0x%04x\n", -ret);
-      return false;
-    }
-
-    ret = mbedtls_pkcs5_pbkdf2_hmac_ext(
-        MBEDTLS_MD_SHA256, (const unsigned char *)password, strlen(password),
-        mac, 6, // Use MAC address as salt
-        10000,  // iterations (must match browser)
-        32,     // key length
-        stored_password_hash);
-
-    mbedtls_md_free(&md_ctx);
-
-    if (ret != 0) {
-      printf("mbedtls_pkcs5_pbkdf2_hmac_ext failed: -0x%04x\n", -ret);
-      return false;
-    }
-
-    password_set = true;
-
-    printf("\n=== Password Set ===\n");
-    printf("Salt (MAC Address): ");
-    for (int i = 0; i < 6; i++)
-      printf("%02x", mac[i]);
-    printf("\n");
-    printf("Stored PBKDF2 Hash: ");
-    for (int i = 0; i < 32; i++)
-      printf("%02x", stored_password_hash[i]);
-    printf("\n===================\n\n");
-
-    return true;
-  }
-
-  void my_host_check_mac(const uint8_t *target_key,
-                         const uint8_t *chal_or_tempkey,
+  void my_host_check_mac(const uint8_t *target_key, const uint8_t *tempkey,
                          const uint8_t *other_data, const uint8_t *sn,
                          uint8_t *out_mac) {
+    // See section 11.2 of the ATECC608B datasheet CheckMac message format
     uint8_t msg[88] = {0};
-
-    // 32 bytes: key[KeyID] or TempKey
     memcpy(&msg[0], target_key, 32);
-
-    // 32 bytes: ClientChal or TempKey
-    memcpy(&msg[32], chal_or_tempkey, 32);
-
-    // 4 bytes: OtherData[0:3] (Opcode, Mode, KeyID)
+    memcpy(&msg[32], tempkey, 32);
     memcpy(&msg[64], &other_data[0], 4);
-
-    // 8 bytes: Zeros
     memset(&msg[68], 0, 8);
-
-    // 3 bytes: OtherData[4:6]
     memcpy(&msg[76], &other_data[4], 3);
-
-    // 1 byte: SN[8]
     msg[79] = sn[8];
-
-    // 4 bytes: OtherData[7:10]
     memcpy(&msg[80], &other_data[7], 4);
-
-    // 2 bytes: SN[0:1]
     msg[84] = sn[0];
     msg[85] = sn[1];
-
-    // 2 bytes: OtherData[11:12]
     memcpy(&msg[86], &other_data[11], 2);
-
     // Hash the exact 88 bytes using the ESP32's hardware accelerator
     mbedtls_sha256(msg, sizeof(msg), out_mac, 0);
   }
