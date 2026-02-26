@@ -192,31 +192,10 @@ public:
       return false;
     }
 
-    // ==========================================
-    // SLOT 13: No Nonce Required
-    // ==========================================
-    uint8_t challenge_32[32] = {0x11, 0x22, 0x33, 0x44};
-    uint8_t slot13_mac[32] = {0};
-    uint8_t other_data_13[13] = "TangActivate";
-
-    // Host manually calculates the expected MAC
-    my_host_check_mac(received_key, challenge_32, other_data_13, sn,
-                      slot13_mac);
-
-    // CRITICAL FIX: CheckMac Mode MUST be 0x00 here
-    // Bit 0 = 0 (Use ClientChal directly)
-    // Bit 1 = 0 (Use the password stored in Slot 13)
-    status = atcab_checkmac(0x00, 13, challenge_32, slot13_mac, other_data_13);
-    printf("Slot 13 CheckMac: %s (0x%02X)\n",
-           (status == ATCA_SUCCESS) ? "PASSED" : "FAILED", status);
-
-    // ==========================================
-    // SLOT 10: Requires Nonce
-    // ==========================================
     uint8_t nonce_num_in[20] = {0xAA, 0xBB, 0xCC, 0xDD};
     uint8_t rand_out[32] = {0};
     uint8_t slot10_mac[32] = {0};
-    uint8_t other_data_10[13] = {0};
+    uint8_t other_data_10[13] = "TangActivate";
     struct atca_temp_key temp_key;
     memset(&temp_key, 0, sizeof(temp_key));
 
