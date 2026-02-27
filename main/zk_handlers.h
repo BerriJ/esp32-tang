@@ -77,7 +77,6 @@ static esp_err_t handle_zk_unlock(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// API endpoint: Check session status
 static esp_err_t handle_zk_status(httpd_req_t *req) {
   unsigned long uptime_ms = esp_timer_get_time() / 1000;
   char response[128];

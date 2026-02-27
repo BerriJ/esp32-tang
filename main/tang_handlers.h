@@ -16,11 +16,11 @@ static const char *TAG_HANDLERS = "tang_handlers";
 // Forward declarations
 extern httpd_handle_t server_http;
 extern TangKeyStore keystore;
-extern bool is_active;
+extern bool unlocked;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
 static esp_err_t handle_adv(httpd_req_t *req) {
-  if (!is_active) {
+  if (!unlocked) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_sendstr(req, "Server not active");
     return ESP_FAIL;
@@ -144,7 +144,7 @@ static esp_err_t handle_adv(httpd_req_t *req) {
 
 // POST /rec or /rec/{kid} - Recovery endpoint
 static esp_err_t handle_rec(httpd_req_t *req) {
-  if (!is_active) {
+  if (!unlocked) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_sendstr(req, "Server not active");
     return ESP_FAIL;

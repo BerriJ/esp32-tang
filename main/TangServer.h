@@ -31,10 +31,10 @@ const char *wifi_ssid = CONFIG_WIFI_SSID;
 const char *wifi_password = CONFIG_WIFI_PASSWORD;
 
 // --- Global State ---
+bool unlocked = false; // Start inactive until provisioned and authenticated
 httpd_handle_t server_http = NULL;
 TangKeyStore keystore;
-bool is_active = true; // Auto-activate since we're using dummy keys
-ZKAuth zk_auth;        // Zero-Knowledge Authentication
+ZKAuth zk_auth; // Zero-Knowledge Authentication
 
 // WiFi event group
 static EventGroupHandle_t wifi_event_group;
@@ -102,15 +102,6 @@ void setup_wifi() {
 
 // --- Initial Setup ---
 bool perform_initial_setup() {
-  ESP_LOGI(TAG, "=======================================================");
-  ESP_LOGI(TAG, "FIRST BOOT: INITIAL SETUP REQUIRED");
-  ESP_LOGI(TAG, "=======================================================");
-
-  // Disable watchdog for key generation (can take a long time)
-  esp_task_wdt_deinit();
-
-  // Generate Tang keys
-  ESP_LOGI(TAG, "Generating Tang keys (this may take a while)...");
 
   if (!P256::generate_keypair(keystore.exc_pub, keystore.exc_priv)) {
     ESP_LOGE(TAG, "ERROR: Failed to generate exchange key");
@@ -124,16 +115,11 @@ bool perform_initial_setup() {
   }
 
   ESP_LOGI(TAG, "Configuration saved to NVS");
+
   ESP_LOGI(TAG, "=======================================================");
   ESP_LOGI(TAG, "Setup complete! Device is ready to use");
-  ESP_LOGI(TAG, "NOTE: Keys are stored unencrypted for prototyping");
+  ESP_LOGI(TAG, "NOTE: Exchange key stored unencrypted for prototyping");
   ESP_LOGI(TAG, "=======================================================");
-
-  // Re-enable watchdog
-  esp_task_wdt_config_t wdt_config = {.timeout_ms = 5000,
-                                      .idle_core_mask = (1 << 0) | (1 << 1),
-                                      .trigger_panic = false};
-  esp_task_wdt_init(&wdt_config);
 
   return true;
 }
@@ -143,16 +129,13 @@ httpd_handle_t setup_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
   config.stack_size = 8192;
-  config.max_uri_handlers =
-      16; // Increased to accommodate all handlers including ZK
+  config.max_uri_handlers = 16;
 
   httpd_handle_t server = NULL;
 
   if (httpd_start(&server, &config) == ESP_OK) {
-    // Register provisioning handlers first (must be before ZK handlers)
     register_provision_handlers(server);
 
-    // Register ZK authentication handlers (including root "/" handler)
     register_zk_handlers(server);
 
     // Register Tang protocol handlers
