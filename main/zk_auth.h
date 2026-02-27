@@ -40,8 +40,6 @@ private:
   uint8_t stored_password_hash[32]; // PBKDF2 hash of the correct password
 
   bool initialized;
-  bool password_set;
-  bool unlocked = false; // Set to true after successful authentication
 
   // Convert binary to hex string
   void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex) {
@@ -65,7 +63,7 @@ private:
   }
 
 public:
-  ZKAuth() : initialized(false), password_set(false), unlocked(false) {
+  ZKAuth() : initialized(false) {
     mbedtls_ecp_group_init(&grp);
     mbedtls_mpi_init(&device_private_d);
     mbedtls_ecp_point_init(&device_public_Q);
@@ -135,8 +133,18 @@ public:
 
   // Get device identity (for /api/identity endpoint)
   char *get_identity_json() {
-    char pubkey_hex[131]; // 65 bytes * 2 + null
-    bin_to_hex(device_public_key, 65, pubkey_hex);
+    char pubkey_hex[131];    // 65 bytes * 2 + null
+    uint8_t atec_pubkey[64]; // 65 bytes * 2 + null
+    uint8_t standard_pubkey[65];
+    standard_pubkey[0] = 0x04;
+    // Get public key from ATECC608B and convert to hex
+    ATCA_STATUS status = atcab_get_pubkey(0, atec_pubkey);
+    if (status != ATCA_SUCCESS) {
+      printf("Failed to read public key from ATECC608B: 0x%02X\n", status);
+    }
+
+    memcpy(&standard_pubkey[1], atec_pubkey, 64);
+    bin_to_hex(standard_pubkey, 65, pubkey_hex);
 
     // Get MAC address to use as salt
     uint8_t mac[6];
@@ -223,6 +231,7 @@ public:
       status = atcab_checkmac(0x01, 10, NULL, slot10_mac, other_data_10);
       if (status == ATCA_SUCCESS) {
         printf("Slot 10 CheckMac: PASSED\n");
+        status = atcab_info_set_latch(true);
       } else if (status == (ATCA_STATUS)ATCA_CHECKMAC_VERIFY_FAILED) {
         // 0xD1 (-47 / 0xFFFFFFD1) see atca_status.h
         printf("Slot 10 CheckMac: ACCESS DENIED (Wrong Password)\n");
@@ -230,7 +239,6 @@ public:
         printf("Slot 10 CheckMac: HARDWARE ERROR (0x%02X)\n", status);
       }
     }
-    status = atcab_info_set_latch(true);
 
     if (status != ATCA_SUCCESS) {
       printf("Failed to latch device: 0x%02X\n", status);
@@ -497,7 +505,7 @@ public:
     printf("\n");
     printf("=============================\n\n");
 
-    // Verify the decrypted key against stored password hash
+    // Verify the decrypted key using ATECC608B's CheckMac command
     bool verification_result = verify_key(decrypted_data, 32);
 
     cJSON *resp_doc = cJSON_CreateObject();
@@ -518,7 +526,7 @@ public:
     cJSON_Delete(doc);
 
     // Securely wipe decrypted data
-    memset(decrypted_data, 0, 32);
+    mbedtls_platform_zeroize(decrypted_data, sizeof(decrypted_data));
     free(decrypted_data);
 
     *success_out = verification_result;
