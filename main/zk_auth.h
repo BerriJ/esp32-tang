@@ -5,6 +5,7 @@
 #include "host/atca_host.h"
 #include "mbedtls/sha256.h"
 #include <cJSON.h>
+#include <esp_hmac.h>
 #include <esp_mac.h>
 #include <esp_system.h>
 #include <mbedtls/aes.h>
@@ -177,6 +178,17 @@ public:
     if (received_key == NULL)
       return false;
 
+    // Bond the received PBKDF2 key with the eFuse HMAC peripheral
+    // This reproduces the same derivation done during provisioning:
+    //   final_key = HMAC-SHA256(eFuse_KEY5, pbkdf2_key)
+    uint8_t bonded_key[32];
+    esp_err_t hmac_err =
+        esp_hmac_calculate(HMAC_KEY5, received_key, 32, bonded_key);
+    if (hmac_err != ESP_OK) {
+      printf("eFuse HMAC bonding failed: 0x%04x\n", hmac_err);
+      return false;
+    }
+
     ATCA_STATUS status;
 
     bool latch_status = false;
@@ -216,7 +228,7 @@ public:
       atcah_nonce(&nonce_params);
 
       // Host calculates MAC using the calculated TempKey as the challenge
-      my_host_check_mac(received_key, temp_key.value, other_data_10, sn,
+      my_host_check_mac(bonded_key, temp_key.value, other_data_10, sn,
                         slot10_mac);
 
       // See section 11.2 of the ATECC608B datasheet CheckMac message format
@@ -230,6 +242,10 @@ public:
         printf("Slot 10 CheckMac: HARDWARE ERROR (0x%02X)\n", status);
       }
     }
+
+    // Wipe the bonded key from stack memory
+    memset(bonded_key, 0, 32);
+
     status = atcab_info_set_latch(true);
 
     if (status != ATCA_SUCCESS) {

@@ -1,25 +1,100 @@
 #ifndef PROVISION_H
 #define PROVISION_H
 
+#include "crypto.h"
 #include "cryptoauthlib.h"
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
+#include <esp_hmac.h>
 #include <esp_log.h>
+#include <esp_mac.h>
+#include <esp_random.h>
 
 static const char *TAG_PROVISION = "provision";
 
-// Hardcoded HMAC key for prototyping (32 bytes)
-// WARNING: This is for prototyping only! In production, this should be securely
-// generated
+// IO Protection Key for ATECC608B (32 bytes)
 static const uint8_t IO_KEY[32] = {
     0x2c, 0x43, 0x34, 0x9c, 0x4c, 0xe6, 0x70, 0xf3, 0xcb, 0x10, 0xef,
     0xcc, 0x56, 0xf0, 0xd0, 0xc4, 0x03, 0x2c, 0x45, 0x9f, 0xf3, 0xcb,
     0x29, 0x27, 0x22, 0x8e, 0x93, 0x3c, 0xfe, 0x6e, 0x87, 0xed};
 
-static const uint8_t HMAC_KEY[32] = {
-    0x24, 0x01, 0x2a, 0xf7, 0x3e, 0x62, 0x7a, 0x5e, 0x5e, 0xdc, 0xf0,
-    0xce, 0xd6, 0xe5, 0x32, 0x20, 0x56, 0xca, 0x29, 0xd1, 0x52, 0xf8,
-    0x17, 0x23, 0x06, 0x75, 0x4f, 0x1d, 0xb9, 0x85, 0x51, 0x5e};
+// Default initial password — must be changed after first provisioning.
+static const char *PROVISION_DEFAULT_PASSWORD = "changeme";
+
+// Must match the iteration count used by the web client (zk_web_page.h)
+static const int PROVISION_PBKDF2_ITERATIONS = 10000;
+
+/**
+ * Run a 32-byte key through the ESP32-C6 HMAC hardware peripheral
+ * using the bonding secret stored in eFuse BLOCK_KEY5.
+ *
+ * result = HMAC-SHA256(eFuse_KEY5, input_key)
+ *
+ * This creates a secure bond between the ESP32 chip and the ATECC608B:
+ * only this specific ESP32 can reproduce the final key.
+ *
+ * @param input_key  32-byte input (e.g. PBKDF2 output)
+ * @param out_key    32-byte output (the bonded key)
+ * @return true on success
+ */
+bool bond_with_efuse_hmac(const uint8_t input_key[32], uint8_t out_key[32]) {
+  esp_err_t err = esp_hmac_calculate(HMAC_KEY5, input_key, 32, out_key);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG_PROVISION, "HMAC peripheral failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Derive the final authentication key from a password.
+ *
+ * Two-stage derivation that bonds the password to this specific ESP32 chip:
+ *   1) PBKDF2-HMAC-SHA256(password, salt=MAC_address, iterations=10000)
+ *   2) HMAC-SHA256 via hardware peripheral using eFuse BLOCK_KEY5
+ *
+ * The web client performs step 1 and sends the intermediate key over the
+ * ECIES tunnel.  The ESP32 then applies step 2 before comparing against
+ * the ATECC608B (CheckMac).  During provisioning both steps run locally.
+ *
+ * @param password   Null-terminated password string
+ * @param out_key    Buffer of at least 32 bytes to receive the final key
+ * @return true on success
+ */
+bool derive_hmac_key(const char *password, uint8_t out_key[32]) {
+  // Use the Wi-Fi STA MAC address as salt (same as web client)
+  uint8_t mac[6];
+  esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG_PROVISION, "Failed to read MAC address: %s",
+             esp_err_to_name(err));
+    return false;
+  }
+
+  ESP_LOGI(TAG_PROVISION, "Deriving HMAC key with PBKDF2 (salt=MAC, iter=%d)",
+           PROVISION_PBKDF2_ITERATIONS);
+  ESP_LOG_BUFFER_HEX(TAG_PROVISION, mac, sizeof(mac));
+
+  // Stage 1: PBKDF2
+  uint8_t intermediate[32];
+  int ret = PBKDF2::derive_key(intermediate, 32, password, mac, sizeof(mac),
+                               PROVISION_PBKDF2_ITERATIONS);
+  if (ret != 0) {
+    ESP_LOGE(TAG_PROVISION, "PBKDF2 derivation failed: -0x%04x", -ret);
+    return false;
+  }
+
+  // Stage 2: Bond with eFuse BLOCK_KEY5 via hardware HMAC
+  ESP_LOGI(TAG_PROVISION, "Bonding with eFuse HMAC peripheral...");
+  if (!bond_with_efuse_hmac(intermediate, out_key)) {
+    memset(intermediate, 0, 32);
+    return false;
+  }
+
+  memset(intermediate, 0, 32);
+  ESP_LOGI(TAG_PROVISION, "HMAC key derived and bonded successfully");
+  return true;
+}
 
 // ATECC608B Configuration values
 // SlotConfig (Bytes 20-51): 32 bytes for 16 slots (2 bytes each)
@@ -212,7 +287,14 @@ bool provision_atecc608b_data_zone() {
 
   ATCA_STATUS status;
 
-  // 2. Write Symmetric Keys (Slots 6, 10, 13)
+  // 2. Derive the HMAC key from the default password
+  uint8_t hmac_key[32];
+  if (!derive_hmac_key(PROVISION_DEFAULT_PASSWORD, hmac_key)) {
+    ESP_LOGE(TAG_PROVISION, "Failed to derive HMAC key from password");
+    return false;
+  }
+
+  // 3. Write Symmetric Keys (Slots 6, 10, 13)
   ESP_LOGI(TAG_PROVISION, "Writing IO_KEY to Slot 6...");
   status = atcab_write_bytes_zone(ATCA_ZONE_DATA, 6, 0, IO_KEY, 32);
   if (status != ATCA_SUCCESS) {
@@ -220,21 +302,26 @@ bool provision_atecc608b_data_zone() {
     return false;
   }
 
-  ESP_LOGI(TAG_PROVISION, "Writing HMAC_KEY to Slot 10...");
-  status = atcab_write_bytes_zone(ATCA_ZONE_DATA, 10, 0, HMAC_KEY, 32);
+  ESP_LOGI(TAG_PROVISION, "Writing derived HMAC key to Slot 10...");
+  status = atcab_write_bytes_zone(ATCA_ZONE_DATA, 10, 0, hmac_key, 32);
   if (status != ATCA_SUCCESS) {
     ESP_LOGE(TAG_PROVISION, "Failed Slot 10: 0x%02X", status);
+    memset(hmac_key, 0, 32);
     return false;
   }
 
-  ESP_LOGI(TAG_PROVISION, "Writing HMAC_KEY to Slot 13...");
-  status = atcab_write_bytes_zone(ATCA_ZONE_DATA, 13, 0, HMAC_KEY, 32);
+  ESP_LOGI(TAG_PROVISION, "Writing derived HMAC key to Slot 13...");
+  status = atcab_write_bytes_zone(ATCA_ZONE_DATA, 13, 0, hmac_key, 32);
   if (status != ATCA_SUCCESS) {
     ESP_LOGE(TAG_PROVISION, "Failed Slot 13: 0x%02X", status);
+    memset(hmac_key, 0, 32);
     return false;
   }
 
-  // 3. Write ECC Public Key to Slot 9
+  // Wipe the derived key from stack memory
+  memset(hmac_key, 0, 32);
+
+  // 4. Write ECC Public Key to Slot 9
   // Note: The 0x04 prefix byte is stripped. The ATECC608B expects exactly 64
   // bytes.
   static const uint8_t SLOT9_PUB_KEY[64] = {
@@ -252,7 +339,7 @@ bool provision_atecc608b_data_zone() {
     return false;
   }
 
-  // 4. Generate Random ECC Private Keys (Slots 0-5, 11, 12)
+  // 5. Generate Random ECC Private Keys (Slots 0-5, 11, 12)
   uint8_t pubkey[64]; // Buffer to catch the generated public keys
   const uint8_t genkey_slots[] = {0, 1, 2, 3, 4, 5, 11, 12};
 
@@ -282,7 +369,7 @@ bool provision_atecc608b_data_zone() {
     printf("\n\n");
   }
 
-  // 5. Lock the Data Zone
+  // 6. Lock the Data Zone
   ESP_LOGI(TAG_PROVISION, "Locking Data Zone...");
   status = atcab_lock_data_zone();
   if (status != ATCA_SUCCESS) {
@@ -317,7 +404,17 @@ bool needs_provisioning() {
 }
 
 /**
- * Provision the ESP32-C6 efuse BLOCK_KEY5 with hardcoded HMAC key
+ * Provision the ESP32-C6 efuse BLOCK_KEY5 with a random bonding secret.
+ *
+ * This key never leaves the eFuse and is only accessible to the HMAC
+ * hardware peripheral.  It is used to create a secure bond between the
+ * ESP32 chip and the ATECC608B: HMAC-SHA256(eFuse_key, PBKDF2_output)
+ * produces a final key that only this specific ESP32 can reproduce.
+ *
+ * IMPORTANT: This must be called BEFORE provision_atecc608b_data_zone()
+ * because the HMAC peripheral needs the eFuse key to derive the
+ * authentication key that gets stored in the ATECC608B.
+ *
  * Returns: true on success, false on failure
  */
 bool provision_efuse_key5() {
@@ -329,11 +426,18 @@ bool provision_efuse_key5() {
     return false;
   }
 
-  // Write the HMAC key to BLOCK_KEY5
-  ESP_LOGI(TAG_PROVISION, "Writing HMAC key to BLOCK_KEY5...");
+  // Generate a random 32-byte bonding secret
+  uint8_t bonding_key[32];
+  esp_fill_random(bonding_key, sizeof(bonding_key));
+
+  // Write the random bonding key to BLOCK_KEY5 with HMAC_UP purpose
+  ESP_LOGI(TAG_PROVISION, "Writing random bonding key to BLOCK_KEY5...");
   esp_err_t err =
       esp_efuse_write_key(EFUSE_BLK_KEY5, ESP_EFUSE_KEY_PURPOSE_HMAC_UP,
-                          HMAC_KEY, sizeof(HMAC_KEY));
+                          bonding_key, sizeof(bonding_key));
+
+  // Wipe the key from stack memory
+  memset(bonding_key, 0, 32);
 
   if (err != ESP_OK) {
     ESP_LOGE(TAG_PROVISION, "Failed to write EFUSE KEY5: %s",

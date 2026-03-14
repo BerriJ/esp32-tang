@@ -67,8 +67,20 @@ static esp_err_t handle_provision_api(httpd_req_t *req) {
     bool atecc_done = true;
     bool efuse_done = true;
 
-    // Step 1: Provision ATECC608B config if needed
-    if (!is_atecc608b_config_locked()) {
+    // Step 1: Provision EFUSE KEY5 first (needed by HMAC peripheral for
+    // bonding)
+    if (!is_efuse_key5_used()) {
+      ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning EFUSE KEY5...");
+      efuse_done = provision_efuse_key5();
+      if (!efuse_done) {
+        message = "Failed to provision EFUSE KEY5";
+        success = false;
+        ESP_LOGE(TAG_PROVISION_HANDLERS, "%s", message);
+      }
+    }
+
+    // Step 2: Provision ATECC608B config if needed
+    if (efuse_done && !is_atecc608b_config_locked()) {
       ESP_LOGI(TAG_PROVISION_HANDLERS,
                "Provisioning ATECC608B configuration...");
       atecc_done = provision_atecc608b_config();
@@ -79,18 +91,8 @@ static esp_err_t handle_provision_api(httpd_req_t *req) {
       }
     }
 
-    // Step 2: Provision EFUSE KEY5 if needed and previous step succeeded
-    if (atecc_done && !is_efuse_key5_used()) {
-      ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning EFUSE KEY5...");
-      efuse_done = provision_efuse_key5();
-      if (!efuse_done) {
-        message = "Failed to provision EFUSE KEY5";
-        success = false;
-        ESP_LOGE(TAG_PROVISION_HANDLERS, "%s", message);
-      }
-    }
-
-    if (!is_atecc608b_data_locked()) {
+    // Step 3: Provision ATECC608B data zone (uses HMAC peripheral + eFuse key)
+    if (efuse_done && atecc_done && !is_atecc608b_data_locked()) {
       ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning ATECC608B data zone...");
       bool data_done = provision_atecc608b_data_zone();
       if (!data_done) {
