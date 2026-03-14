@@ -217,9 +217,9 @@ const char PROVISION_WEB_PAGE[] = R"rawliteral(
         </div>
         
         <div id="statusMessage" class="status-message"></div>
-        Device
+        
         <button id="provisionBtn" class="provision-btn" onclick="provisionDevice()">
-            Provision EFUSE KEY5
+            Provision Device
         </button>
         
         <div class="skip-link">
@@ -278,7 +278,7 @@ const char PROVISION_WEB_PAGE[] = R"rawliteral(
             
             // Show info messageProvisioning device security hardware
             statusMsg.className = 'status-message info';
-            statusMsg.textContent = 'Writing HMAC key to EFUSE BLOCK_KEY5...';
+            statusMsg.textContent = 'Provisioning device security hardware...';
             
             try {
                 const response = await fetch('/api/provision', {
