@@ -260,10 +260,44 @@ static esp_err_t handle_reboot(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// 404 handler - Route /rec/{kid} to handle_rec
+// Compute JWK Thumbprint (RFC 7638) of the exchange key.
+// For EC P-256: SHA-256({"crv":"P-256","kty":"EC","x":"...","y":"..."})
+// Writes base64url-encoded thumbprint to out_buf (must be >= 44 bytes).
+static bool compute_exchange_key_thumbprint(char *out_buf,
+                                            size_t out_buf_size) {
+  if (!keystore.exc_pub_loaded)
+    return false;
+
+  char x_b64[64] = {0}, y_b64[64] = {0};
+  b64url_encode_buf(&keystore.exc_pub[0], 32, x_b64, sizeof(x_b64));
+  b64url_encode_buf(&keystore.exc_pub[32], 32, y_b64, sizeof(y_b64));
+
+  // RFC 7638: members in lexicographic order, no whitespace
+  char canonical[256];
+  int len =
+      snprintf(canonical, sizeof(canonical),
+               "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"%s\",\"y\":\"%s\"}",
+               x_b64, y_b64);
+  if (len <= 0 || (size_t)len >= sizeof(canonical))
+    return false;
+
+  uint8_t hash[32];
+  mbedtls_sha256((const uint8_t *)canonical, (size_t)len, hash, 0);
+
+  return b64url_encode_buf(hash, 32, out_buf, out_buf_size);
+}
+
+// 404 handler - Route /rec/{kid} to handle_rec after verifying kid
 static esp_err_t handle_not_found(httpd_req_t *req, httpd_err_code_t err) {
   if (req->method == HTTP_POST && strncmp(req->uri, "/rec/", 5) == 0) {
-    return handle_rec(req);
+    // Verify the kid in the URL matches the current exchange key
+    const char *request_kid = req->uri + 5;
+    char current_kid[64] = {0};
+    if (compute_exchange_key_thumbprint(current_kid, sizeof(current_kid)) &&
+        strcmp(request_kid, current_kid) == 0) {
+      return handle_rec(req);
+    }
+    ESP_LOGW(TAG_HANDLERS, "Key ID mismatch for %s", req->uri);
   }
 
   httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
