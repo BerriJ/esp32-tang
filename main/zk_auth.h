@@ -308,30 +308,30 @@ public:
     }
 
     // --- Device-bound key derivation via hardware HMAC ---
-    uint8_t aes_key[32];
-    if (!derive_aes_key(decrypted_hash, aes_key)) {
+    if (!derive_aes_key(decrypted_hash, keystore.master_key)) {
       mbedtls_platform_zeroize(decrypted_hash, 32);
       cJSON_Delete(doc);
       return strdup("{\"error\":\"Hardware HMAC failed\"}");
     }
     mbedtls_platform_zeroize(decrypted_hash, 32);
+    keystore.master_key_loaded = true;
 
-    // --- First-time setup or decrypt existing keys ---
+    // --- Derive keys from master and verify or store ---
     bool verification_result = false;
 
-    if (!keystore.has_exchange_key()) {
-      // First password entry: generate and encrypt both keys
-      printf("First-time setup: generating signing and exchange keys\n");
-      verification_result =
-          keystore.generate_and_encrypt_signing_key(aes_key) &&
-          keystore.generate_and_encrypt_exchange_key(aes_key);
-    } else {
-      // Subsequent: decrypt both keys (GCM tag = password check)
-      verification_result = keystore.decrypt_signing_key(aes_key) &&
-                            keystore.decrypt_exchange_key(aes_key);
+    if (keystore.derive_keys_from_master()) {
+      if (!keystore.has_exchange_key()) {
+        // First activation: store derived public keys in NVS
+        printf("First-time setup: storing derived public keys\n");
+        verification_result = keystore.store_public_keys();
+      } else {
+        // Subsequent: verify derived public keys match stored ones
+        verification_result = keystore.verify_public_keys();
+      }
     }
 
-    mbedtls_platform_zeroize(aes_key, 32);
+    if (!verification_result)
+      keystore.wipe_secrets();
 
     cJSON *resp_doc = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_doc, "success", verification_result);
@@ -358,10 +358,7 @@ public:
 
   void lock() {
     unlocked = false;
-    // Wipe private keys from RAM
-    mbedtls_platform_zeroize(keystore.exc_priv, sizeof(keystore.exc_priv));
-    mbedtls_platform_zeroize(keystore.sig_priv, sizeof(keystore.sig_priv));
-    keystore.sig_loaded = false;
+    keystore.wipe_secrets();
   }
 };
 

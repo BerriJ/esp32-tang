@@ -7,11 +7,8 @@
 #include <mbedtls/ecdsa.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
-#include <mbedtls/gcm.h>
 #include <mbedtls/md.h>
-#include <mbedtls/pkcs5.h>
 #include <mbedtls/sha256.h>
-#include <mbedtls/sha512.h>
 
 static const char *TAG_CRYPTO = "crypto";
 
@@ -21,9 +18,6 @@ static const char *TAG_CRYPTO = "crypto";
 const int P256_PRIVATE_KEY_SIZE = 32; // Scalar value
 const int P256_PUBLIC_KEY_SIZE = 64;  // Uncompressed point (x + y)
 const int P256_COORDINATE_SIZE = 32;  // Single coordinate (x or y)
-const int GCM_TAG_SIZE = 16;
-const int SALT_SIZE = 16;
-const int PBKDF2_ITERATIONS = 1000;
 
 // --- RNG Management ---
 class RNG {
@@ -252,54 +246,6 @@ public:
     mbedtls_mpi_free(&s);
 
     return (ret == 0);
-  }
-};
-
-// --- AES-GCM Operations ---
-class AESGCM {
-public:
-  static bool encrypt(uint8_t *plaintext, size_t len, const uint8_t *key,
-                      size_t key_len, const uint8_t *iv, size_t iv_len,
-                      const uint8_t *aad, size_t aad_len, uint8_t *tag) {
-    mbedtls_gcm_context ctx;
-    mbedtls_gcm_init(&ctx);
-
-    int ret = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, key, key_len * 8);
-    if (ret == 0) {
-      ret = mbedtls_gcm_crypt_and_tag(&ctx, MBEDTLS_GCM_ENCRYPT, len, iv,
-                                      iv_len, aad, aad_len, plaintext,
-                                      plaintext, GCM_TAG_SIZE, tag);
-    }
-
-    mbedtls_gcm_free(&ctx);
-    return (ret == 0);
-  }
-
-  static bool decrypt(uint8_t *ciphertext, size_t len, const uint8_t *key,
-                      size_t key_len, const uint8_t *iv, size_t iv_len,
-                      const uint8_t *aad, size_t aad_len, const uint8_t *tag) {
-    mbedtls_gcm_context ctx;
-    mbedtls_gcm_init(&ctx);
-
-    int ret = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, key, key_len * 8);
-    if (ret == 0) {
-      ret = mbedtls_gcm_auth_decrypt(&ctx, len, iv, iv_len, aad, aad_len, tag,
-                                     GCM_TAG_SIZE, ciphertext, ciphertext);
-    }
-
-    mbedtls_gcm_free(&ctx);
-    return (ret == 0);
-  }
-};
-
-// --- PBKDF2 ---
-class PBKDF2 {
-public:
-  static int derive_key(uint8_t *output, size_t key_len, const char *password,
-                        const uint8_t *salt, size_t salt_len, int iterations) {
-    return mbedtls_pkcs5_pbkdf2_hmac_ext(
-        MBEDTLS_MD_SHA256, (const uint8_t *)password, strlen(password), salt,
-        salt_len, iterations, key_len, output);
   }
 };
 
