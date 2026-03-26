@@ -403,7 +403,7 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                 </div>
                 <div class="status-item">
                 <span class="status-label">Encryption</span>
-                <span class="status-value">ECIES (P-256 + AES-CBC + HMAC)</span>
+                <span class="status-value">P-256 + eFuse HMAC</span>
                 </div>
                 <div class="status-item">
                     <span class="status-label">Authenticated At</span>

@@ -2,7 +2,6 @@
 #define TANG_HANDLERS_H
 
 #include "crypto.h"
-#include "cryptoauthlib.h"
 #include "encoding.h"
 #include "tang_storage.h"
 #include <cJSON.h>
@@ -19,30 +18,24 @@ extern TangKeyStore keystore;
 extern bool unlocked;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
+// Available once signing key + exchange key exist (public keys are public).
+// Does NOT require activation — only /rec requires unlocked.
 static esp_err_t handle_adv(httpd_req_t *req) {
-  if (!unlocked) {
+  if (!keystore.sig_loaded || !keystore.exc_pub_loaded) {
     httpd_resp_set_status(req, "503 Service Unavailable");
-    httpd_resp_sendstr(req, "Server not active");
-    return ESP_FAIL;
-  }
-
-  uint8_t sig_pub[ATCA_PUB_KEY_SIZE];
-
-  if (atcab_get_pubkey(1, sig_pub) != ATCA_SUCCESS) {
-    ESP_LOGE(TAG_HANDLERS, "Failed to read public keys from secure element");
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Hardware error");
+    httpd_resp_sendstr(req, "Server not configured");
     return ESP_FAIL;
   }
 
   char sig_x_b64[64] = {0}, sig_y_b64[64] = {0};
   char rec_x_b64[64] = {0}, rec_y_b64[64] = {0};
 
-  b64url_encode_buf(&sig_pub[0], 32, sig_x_b64, sizeof(sig_x_b64));
-  b64url_encode_buf(&sig_pub[32], 32, sig_y_b64, sizeof(sig_y_b64));
+  b64url_encode_buf(&keystore.sig_pub[0], 32, sig_x_b64, sizeof(sig_x_b64));
+  b64url_encode_buf(&keystore.sig_pub[32], 32, sig_y_b64, sizeof(sig_y_b64));
   b64url_encode_buf(&keystore.exc_pub[0], 32, rec_x_b64, sizeof(rec_x_b64));
   b64url_encode_buf(&keystore.exc_pub[32], 32, rec_y_b64, sizeof(rec_y_b64));
 
-  // Build JWK set payload using cJSON
+  // Build JWK set payload
   cJSON *payload_root = cJSON_CreateObject();
   cJSON *keys = cJSON_CreateArray();
 
@@ -53,12 +46,12 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   cJSON_AddStringToObject(sig_key, "crv", "P-256");
   cJSON_AddStringToObject(sig_key, "x", sig_x_b64);
   cJSON_AddStringToObject(sig_key, "y", sig_y_b64);
-
   cJSON *sig_key_ops = cJSON_CreateArray();
   cJSON_AddItemToArray(sig_key_ops, cJSON_CreateString("verify"));
   cJSON_AddItemToObject(sig_key, "key_ops", sig_key_ops);
   cJSON_AddItemToArray(keys, sig_key);
 
+  // Exchange/recovery key
   cJSON *rec_key = cJSON_CreateObject();
   cJSON_AddStringToObject(rec_key, "alg", "ECMR");
   cJSON_AddStringToObject(rec_key, "kty", "EC");
@@ -72,14 +65,13 @@ static esp_err_t handle_adv(httpd_req_t *req) {
 
   cJSON_AddItemToObject(payload_root, "keys", keys);
 
-  // Print payload JSON and encode to B64 dynamically
+  // Encode payload to base64url
   char *payload_json = cJSON_PrintUnformatted(payload_root);
   size_t payload_len = strlen(payload_json);
   size_t payload_b64_size = ((payload_len + 2) / 3) * 4 + 1;
   char *payload_b64 = (char *)malloc(payload_b64_size);
   b64url_encode_buf((uint8_t *)payload_json, payload_len, payload_b64,
                     payload_b64_size);
-
   free(payload_json);
   cJSON_Delete(payload_root);
 
@@ -94,11 +86,10 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   char *protected_b64 = (char *)malloc(protected_b64_size);
   b64url_encode_buf((uint8_t *)protected_json, protected_len, protected_b64,
                     protected_b64_size);
-
   free(protected_json);
   cJSON_Delete(protected_root);
 
-  // Sign the payload
+  // Sign: SHA-256(protected_b64 "." payload_b64) with software P-256
   size_t signing_input_size =
       strlen(protected_b64) + 1 + strlen(payload_b64) + 1;
   char *signing_input = (char *)malloc(signing_input_size);
@@ -110,9 +101,9 @@ static esp_err_t handle_adv(httpd_req_t *req) {
                  0);
   free(signing_input);
 
-  uint8_t signature[ATCA_ECCP256_SIG_SIZE];
-  if (atcab_sign(1, hash, signature) != ATCA_SUCCESS) {
-    ESP_LOGE(TAG_HANDLERS, "Hardware signing failed");
+  uint8_t signature[64]; // r(32) + s(32)
+  if (!P256::sign(hash, 32, keystore.sig_priv, signature)) {
+    ESP_LOGE(TAG_HANDLERS, "Software signing failed");
     free(payload_b64);
     free(protected_b64);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Signing failed");
@@ -133,8 +124,7 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   free(payload_b64);
   free(protected_b64);
 
-  httpd_resp_set_type(
-      req, "application/jose+json"); // Tang expects this specific type
+  httpd_resp_set_type(req, "application/jose+json");
   httpd_resp_sendstr(req, response);
   free(response);
 
@@ -142,7 +132,7 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// POST /rec or /rec/{kid} - Recovery endpoint
+// POST /rec or /rec/{kid} - Recovery endpoint (requires activation)
 static esp_err_t handle_rec(httpd_req_t *req) {
   if (!unlocked) {
     httpd_resp_set_status(req, "503 Service Unavailable");
@@ -150,7 +140,6 @@ static esp_err_t handle_rec(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  // Read request body
   char *buf = (char *)malloc(req->content_len + 1);
   if (!buf) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -161,14 +150,12 @@ static esp_err_t handle_rec(httpd_req_t *req) {
   int ret = httpd_req_recv(req, buf, req->content_len);
   if (ret <= 0) {
     free(buf);
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT)
       httpd_resp_send_408(req);
-    }
     return ESP_FAIL;
   }
   buf[ret] = '\0';
 
-  // Parse JSON
   cJSON *req_doc = cJSON_Parse(buf);
   free(buf);
 
@@ -177,7 +164,6 @@ static esp_err_t handle_rec(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  // Extract client's ephemeral public key
   cJSON *x_item = cJSON_GetObjectItem(req_doc, "x");
   cJSON *y_item = cJSON_GetObjectItem(req_doc, "y");
 
@@ -191,8 +177,6 @@ static esp_err_t handle_rec(httpd_req_t *req) {
 
   uint8_t client_pub_key[P256_PUBLIC_KEY_SIZE];
 
-  // Use the new helper to decode and strictly validate the length of both
-  // coordinates
   if (!b64url_decode_buf(x_item->valuestring, &client_pub_key[0],
                          P256_COORDINATE_SIZE) ||
       !b64url_decode_buf(y_item->valuestring,
@@ -205,7 +189,7 @@ static esp_err_t handle_rec(httpd_req_t *req) {
 
   cJSON_Delete(req_doc);
 
-  // Perform ECDH to get shared point
+  // Software ECDH
   uint8_t shared_point[P256_PUBLIC_KEY_SIZE];
   if (!P256::ecdh_compute_shared_point(client_pub_key, keystore.exc_priv,
                                        shared_point, true)) {
@@ -222,7 +206,6 @@ static esp_err_t handle_rec(httpd_req_t *req) {
   b64url_encode_buf(&shared_point[P256_COORDINATE_SIZE], P256_COORDINATE_SIZE,
                     shared_y_b64, sizeof(shared_y_b64));
 
-  // Return shared point as JWK
   cJSON *resp_root = cJSON_CreateObject();
   cJSON_AddStringToObject(resp_root, "alg", "ECMR");
   cJSON_AddStringToObject(resp_root, "kty", "EC");
@@ -244,28 +227,6 @@ static esp_err_t handle_rec(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// --- Administration Handlers ---
-
-// GET /config - Get ATECC608B configuration
-static esp_err_t handle_config(httpd_req_t *req) {
-  ESP_LOGI(TAG_HANDLERS, "Serving ATECC608B config");
-
-  char *json_str = atecc608B_get_config_json();
-
-  if (!json_str) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                        "Config data not available");
-    return ESP_FAIL;
-  }
-
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, json_str);
-  free(json_str);
-
-  ESP_LOGI(TAG_HANDLERS, "Served /config");
-  return ESP_OK;
-}
-
 // GET /reboot - Reboot device
 static esp_err_t handle_reboot(httpd_req_t *req) {
   httpd_resp_sendstr(req, "Rebooting...");
@@ -274,9 +235,8 @@ static esp_err_t handle_reboot(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// 404 handler - Handle /rec/{kid} by routing to handle_rec
+// 404 handler - Route /rec/{kid} to handle_rec
 static esp_err_t handle_not_found(httpd_req_t *req, httpd_err_code_t err) {
-  // Check if it's a POST to /rec/{kid}
   if (req->method == HTTP_POST && strncmp(req->uri, "/rec/", 5) == 0) {
     return handle_rec(req);
   }

@@ -15,8 +15,7 @@
 
 static const char *TAG = "TangServer";
 
-// Include core components
-#include "atecc608a.h"
+// Core components (order matters — later headers reference earlier ones)
 #include "crypto.h"
 #include "encoding.h"
 #include "provision.h"
@@ -31,10 +30,10 @@ const char *wifi_ssid = CONFIG_WIFI_SSID;
 const char *wifi_password = CONFIG_WIFI_PASSWORD;
 
 // --- Global State ---
-bool unlocked = false; // Start inactive until provisioned and authenticated
+bool unlocked = false;
 httpd_handle_t server_http = NULL;
 TangKeyStore keystore;
-ZKAuth zk_auth; // Zero-Knowledge Authentication
+ZKAuth zk_auth;
 
 // WiFi event group
 static EventGroupHandle_t wifi_event_group;
@@ -59,29 +58,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
 // --- WiFi Setup ---
 void setup_wifi() {
-  // Initialize event group
   wifi_event_group = xEventGroupCreate();
 
-  // Initialize network interface
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
   assert(sta_netif);
 
-  // Set hostname
   ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, "esp-tang-lol"));
 
-  // Initialize WiFi
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-  // Register event handlers
   ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                              &wifi_event_handler, NULL));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                              &wifi_event_handler, NULL));
 
-  // Configure WiFi
   wifi_config_t wifi_config = {};
   if (strlen(wifi_ssid) > 0) {
     strncpy((char *)wifi_config.sta.ssid, wifi_ssid,
@@ -100,30 +93,6 @@ void setup_wifi() {
   }
 }
 
-// --- Initial Setup ---
-bool perform_initial_setup() {
-
-  if (!P256::generate_keypair(keystore.exc_pub, keystore.exc_priv)) {
-    ESP_LOGE(TAG, "ERROR: Failed to generate exchange key");
-    return false;
-  }
-
-  // Save Tang keys directly (no encryption in prototype)
-  if (!keystore.save_tang_keys()) {
-    ESP_LOGE(TAG, "ERROR: Failed to save Tang keys");
-    return false;
-  }
-
-  ESP_LOGI(TAG, "Configuration saved to NVS");
-
-  ESP_LOGI(TAG, "=======================================================");
-  ESP_LOGI(TAG, "Setup complete! Device is ready to use");
-  ESP_LOGI(TAG, "NOTE: Exchange key stored unencrypted for prototyping");
-  ESP_LOGI(TAG, "=======================================================");
-
-  return true;
-}
-
 // --- Setup HTTP Server Routes ---
 httpd_handle_t setup_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -135,10 +104,8 @@ httpd_handle_t setup_http_server() {
 
   if (httpd_start(&server, &config) == ESP_OK) {
     register_provision_handlers(server);
-
     register_zk_handlers(server);
 
-    // Register Tang protocol handlers
     httpd_uri_t adv_uri = {.uri = "/adv",
                            .method = HTTP_GET,
                            .handler = handle_adv,
@@ -157,19 +124,12 @@ httpd_handle_t setup_http_server() {
                            .user_ctx = NULL};
     httpd_register_uri_handler(server, &rec_uri);
 
-    httpd_uri_t config_uri = {.uri = "/config",
-                              .method = HTTP_GET,
-                              .handler = handle_config,
-                              .user_ctx = NULL};
-    httpd_register_uri_handler(server, &config_uri);
-
     httpd_uri_t reboot_uri = {.uri = "/reboot",
                               .method = HTTP_GET,
                               .handler = handle_reboot,
                               .user_ctx = NULL};
     httpd_register_uri_handler(server, &reboot_uri);
 
-    // Register custom error handler for 404
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
 
     ESP_LOGI(TAG, "HTTP server listening on port 80");
@@ -184,7 +144,7 @@ httpd_handle_t setup_http_server() {
 void setup() {
   ESP_LOGI(TAG, "\n\nESP32 Tang Server Starting...");
 
-  // Initialize NVS (required before any storage operations)
+  // 1. Initialize NVS
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -194,27 +154,44 @@ void setup() {
   ESP_ERROR_CHECK(ret);
   ESP_LOGI(TAG, "NVS initialized");
 
-  // Initialize ATECC608A
-  if (atecc608B_init()) {
-    atecc608B_print_config();
-  } else {
-    ESP_LOGW(TAG, "WARNING: ATECC608A initialization failed");
-  }
-
-  // Load or initialize configuration
-  if (keystore.is_configured()) {
-    ESP_LOGI(TAG, "Found existing configuration");
-    // Auto-load Tang keys on startup (no activation needed in prototype)
-    if (keystore.load_tang_keys()) {
-      ESP_LOGI(TAG, "Loaded Tang keys - server ready");
+  // 2. Provision eFuse KEY5 if not already burned
+  if (!is_efuse_key5_used()) {
+    ESP_LOGI(TAG, "First boot — provisioning eFuse HMAC key...");
+    if (provision_efuse_key5()) {
+      ESP_LOGI(TAG, "eFuse KEY5 provisioned");
     } else {
-      ESP_LOGW(TAG, "Failed to load Tang keys");
+      ESP_LOGW(TAG, "eFuse KEY5 provisioning failed");
     }
   } else {
-    perform_initial_setup();
+    ESP_LOGI(TAG, "eFuse KEY5 already provisioned");
   }
 
-  // Initialize Zero-Knowledge Authentication
+  // 3. Load or generate signing key (persistent, unencrypted)
+  if (keystore.has_signing_key()) {
+    if (keystore.load_signing_key()) {
+      ESP_LOGI(TAG, "Signing key loaded");
+    } else {
+      ESP_LOGW(TAG, "Failed to load signing key");
+    }
+  } else {
+    ESP_LOGI(TAG, "First boot — generating signing key...");
+    if (keystore.generate_signing_key()) {
+      ESP_LOGI(TAG, "Signing key generated");
+    } else {
+      ESP_LOGE(TAG, "Failed to generate signing key");
+    }
+  }
+
+  // 4. Load exchange public key if available (for /adv before activation)
+  if (keystore.has_exchange_key()) {
+    if (keystore.load_exchange_pub()) {
+      ESP_LOGI(TAG, "Exchange public key loaded — /adv available");
+    }
+  } else {
+    ESP_LOGI(TAG, "No exchange key yet — will be created on first password");
+  }
+
+  // 5. Initialize Zero-Knowledge Authentication (ephemeral tunnel key)
   ESP_LOGI(TAG, "Initializing Zero-Knowledge Authentication...");
   if (zk_auth.init()) {
     ESP_LOGI(TAG, "ZK Auth initialized successfully");
@@ -222,20 +199,19 @@ void setup() {
     ESP_LOGW(TAG, "ZK Auth initialization failed");
   }
 
+  // 6. WiFi + HTTP server
   setup_wifi();
   server_http = setup_http_server();
 
   if (server_http) {
-    ESP_LOGI(TAG, "HTTP server listening on port 80");
-    ESP_LOGI(TAG, "  - ZK Auth UI: http://<ip>/");
-    ESP_LOGI(TAG, "  - Tang Server: http://<ip>/adv");
+    ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
+    ESP_LOGI(TAG, "  ZK Auth UI:  http://<ip>/");
+    ESP_LOGI(TAG, "  Tang /adv:   http://<ip>/adv");
+    ESP_LOGI(TAG, "  Tang /rec:   http://<ip>/rec  (requires activation)");
   }
 }
 
 // --- Main Loop ---
-void loop() {
-  // Just delay - HTTP server handles requests in its own task
-  vTaskDelay(pdMS_TO_TICKS(1000));
-}
+void loop() { vTaskDelay(pdMS_TO_TICKS(1000)); }
 
 #endif // TANG_SERVER_H

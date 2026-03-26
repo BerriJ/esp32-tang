@@ -1,7 +1,6 @@
 #ifndef ZK_HANDLERS_H
 #define ZK_HANDLERS_H
 
-#include "provision.h"
 #include "zk_auth.h"
 #include "zk_web_page.h"
 #include <esp_http_server.h>
@@ -11,22 +10,12 @@
 
 static const char *TAG_ZK = "zk_handlers";
 
-// Global ZK Auth instance (to be initialized in main)
 extern ZKAuth zk_auth;
+extern TangKeyStore keystore;
 extern httpd_handle_t server_http;
 
 // Serve the main web interface
 static esp_err_t handle_zk_root(httpd_req_t *req) {
-  // Check if provisioning is needed - if so, redirect
-  if (needs_provisioning()) {
-    ESP_LOGI(TAG_ZK, "Provisioning needed - redirecting to /provision");
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "/provision");
-    httpd_resp_sendstr(req, "Redirecting to provisioning page...");
-    return ESP_OK;
-  }
-
-  // Normal landing page
   httpd_resp_set_type(req, "text/html");
   httpd_resp_sendstr(req, ZK_WEB_PAGE);
   return ESP_OK;
@@ -79,9 +68,11 @@ static esp_err_t handle_zk_unlock(httpd_req_t *req) {
 
 static esp_err_t handle_zk_status(httpd_req_t *req) {
   unsigned long uptime_ms = esp_timer_get_time() / 1000;
-  char response[128];
-  snprintf(response, sizeof(response), "{\"unlocked\":%s,\"uptime\":%lu}",
-           zk_auth.is_unlocked() ? "true" : "false", uptime_ms);
+  char response[192];
+  snprintf(response, sizeof(response),
+           "{\"unlocked\":%s,\"configured\":%s,\"uptime\":%lu}",
+           zk_auth.is_unlocked() ? "true" : "false",
+           keystore.has_exchange_key() ? "true" : "false", uptime_ms);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");

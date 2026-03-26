@@ -1,21 +1,10 @@
 dependencies:
-  esp-cryptoauthlib:
-    component_hash: 8d24c37df1e906f9bbee9a869ca86f263ab135179d1c2ba6062448269437b192
-    dependencies:
-    - name: idf
-      version: '>=4.3'
-    source:
-      git: https://github.com/espressif/esp-cryptoauthlib.git
-      path: .
-      type: git
-    version: d9792119ebaec0c54839e6605acd3f11dd937205
   idf:
     source:
       type: idf
     version: 5.5.2
 direct_dependencies:
-- esp-cryptoauthlib
 - idf
-manifest_hash: c756397bc94626ff7204b9330f85430937d2c27c736bf3075be0f87eb8eb0efc
+manifest_hash: e44bf68eca6b7b264ddae08cd014cd3294c0473230381b6d6f88ed18ec879038
 target: esp32c6
 version: 2.0.0
