@@ -89,6 +89,34 @@ static esp_err_t handle_zk_lock(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// API endpoint: Change password (requires device to be unlocked)
+static esp_err_t handle_zk_change_password(httpd_req_t *req) {
+  char content[1024];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0) {
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      httpd_resp_send_408(req);
+    }
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  bool success = false;
+  char *response = zk_auth.process_change_password(content, &success);
+
+  if (response == NULL) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
+  httpd_resp_sendstr(req, response);
+  free(response);
+  return ESP_OK;
+}
+
 // Handle CORS preflight
 static esp_err_t handle_zk_options(httpd_req_t *req) {
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -139,12 +167,25 @@ void register_zk_handlers(httpd_handle_t server) {
                           .user_ctx = NULL};
   httpd_register_uri_handler(server, &lock_uri);
 
+  httpd_uri_t change_password_uri = {.uri = "/api/change-password",
+                                     .method = HTTP_POST,
+                                     .handler = handle_zk_change_password,
+                                     .user_ctx = NULL};
+  httpd_register_uri_handler(server, &change_password_uri);
+
+  httpd_uri_t change_password_options_uri = {.uri = "/api/change-password",
+                                             .method = HTTP_OPTIONS,
+                                             .handler = handle_zk_options,
+                                             .user_ctx = NULL};
+  httpd_register_uri_handler(server, &change_password_options_uri);
+
   ESP_LOGI(TAG_ZK, "ZK Auth routes registered:");
   ESP_LOGI(TAG_ZK, "  GET  /             - Web interface");
   ESP_LOGI(TAG_ZK, "  GET  /api/identity - Device identity");
   ESP_LOGI(TAG_ZK, "  GET  /api/status   - Session status");
   ESP_LOGI(TAG_ZK, "  POST /api/unlock   - Unlock request");
   ESP_LOGI(TAG_ZK, "  POST /api/lock     - Lock device");
+  ESP_LOGI(TAG_ZK, "  POST /api/change-password - Change password");
 }
 
 #endif // ZK_HANDLERS_H

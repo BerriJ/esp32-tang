@@ -57,6 +57,160 @@ private:
     return true;
   }
 
+  // Decrypt an ECIES blob encrypted under the device's ephemeral tunnel key.
+  // Blob format: IV(16) + Ciphertext(N) + HMAC(32), N must be a multiple of 16.
+  // Returns heap-allocated plaintext of N bytes (caller must free and zeroize).
+  // On error returns NULL and sets *error_json to a heap-allocated error
+  // string.
+  uint8_t *decrypt_ecies_payload(const char *client_pub_hex,
+                                 const char *blob_hex, size_t *out_len,
+                                 char **error_json) {
+    *out_len = 0;
+
+    size_t client_pub_len = strlen(client_pub_hex) / 2;
+    uint8_t *client_pub_bin = (uint8_t *)malloc(client_pub_len);
+    if (!hex_to_bin(client_pub_hex, client_pub_bin, client_pub_len)) {
+      free(client_pub_bin);
+      *error_json = strdup("{\"error\":\"Invalid client public key format\"}");
+      return NULL;
+    }
+
+    mbedtls_ecp_point client_point;
+    mbedtls_ecp_point_init(&client_point);
+    int ret = mbedtls_ecp_point_read_binary(&grp, &client_point, client_pub_bin,
+                                            client_pub_len);
+    free(client_pub_bin);
+    if (ret != 0) {
+      mbedtls_ecp_point_free(&client_point);
+      *error_json = strdup("{\"error\":\"Invalid client public key\"}");
+      return NULL;
+    }
+
+    mbedtls_mpi shared_secret_mpi;
+    mbedtls_mpi_init(&shared_secret_mpi);
+    ret = mbedtls_ecdh_compute_shared(&grp, &shared_secret_mpi, &client_point,
+                                      &device_private_d,
+                                      mbedtls_ctr_drbg_random, &ctr_drbg);
+    mbedtls_ecp_point_free(&client_point);
+    if (ret != 0) {
+      mbedtls_mpi_free(&shared_secret_mpi);
+      *error_json = strdup("{\"error\":\"ECDH failed\"}");
+      return NULL;
+    }
+
+    uint8_t shared_secret_raw[32];
+    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 32);
+    mbedtls_mpi_free(&shared_secret_mpi);
+    if (ret != 0) {
+      *error_json = strdup("{\"error\":\"Shared secret export failed\"}");
+      return NULL;
+    }
+
+    const mbedtls_md_info_t *md_info =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    uint8_t enc_key[32], mac_key[32];
+    mbedtls_md_context_t md_ctx;
+    mbedtls_md_init(&md_ctx);
+    mbedtls_md_setup(&md_ctx, md_info, 0);
+
+    mbedtls_md_starts(&md_ctx);
+    mbedtls_md_update(&md_ctx, (const uint8_t *)"encryption", 10);
+    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
+    mbedtls_md_finish(&md_ctx, enc_key);
+
+    mbedtls_md_starts(&md_ctx);
+    mbedtls_md_update(&md_ctx, (const uint8_t *)"authentication", 14);
+    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
+    mbedtls_md_finish(&md_ctx, mac_key);
+    mbedtls_md_free(&md_ctx);
+
+    mbedtls_platform_zeroize(shared_secret_raw, 32);
+
+    size_t blob_len = strlen(blob_hex) / 2;
+    if (blob_len < 48 + 16) {
+      mbedtls_platform_zeroize(enc_key, 32);
+      mbedtls_platform_zeroize(mac_key, 32);
+      *error_json = strdup("{\"error\":\"Invalid blob size\"}");
+      return NULL;
+    }
+
+    size_t ct_len = blob_len - 16 - 32;
+    if (ct_len % 16 != 0) {
+      mbedtls_platform_zeroize(enc_key, 32);
+      mbedtls_platform_zeroize(mac_key, 32);
+      *error_json = strdup("{\"error\":\"Invalid blob alignment\"}");
+      return NULL;
+    }
+
+    uint8_t *blob = (uint8_t *)malloc(blob_len);
+    if (!hex_to_bin(blob_hex, blob, blob_len)) {
+      free(blob);
+      mbedtls_platform_zeroize(enc_key, 32);
+      mbedtls_platform_zeroize(mac_key, 32);
+      *error_json = strdup("{\"error\":\"Invalid blob format\"}");
+      return NULL;
+    }
+
+    uint8_t *iv = blob;
+    uint8_t *ciphertext = blob + 16;
+    uint8_t *received_hmac = blob + 16 + ct_len;
+
+    uint8_t computed_hmac[32];
+    ret =
+        mbedtls_md_hmac(md_info, mac_key, 32, blob, 16 + ct_len, computed_hmac);
+    mbedtls_platform_zeroize(mac_key, 32);
+
+    if (ret != 0) {
+      free(blob);
+      mbedtls_platform_zeroize(enc_key, 32);
+      *error_json = strdup("{\"error\":\"HMAC computation failed\"}");
+      return NULL;
+    }
+
+    int hmac_result = 0;
+    for (int i = 0; i < 32; i++)
+      hmac_result |= received_hmac[i] ^ computed_hmac[i];
+
+    if (hmac_result != 0) {
+      free(blob);
+      mbedtls_platform_zeroize(enc_key, 32);
+      printf("HMAC verification FAILED\n");
+      *error_json = strdup(
+          "{\"error\":\"Authentication failed - data tampered or wrong key\"}");
+      return NULL;
+    }
+
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    ret = mbedtls_aes_setkey_dec(&aes, enc_key, 256);
+    mbedtls_platform_zeroize(enc_key, 32);
+
+    if (ret != 0) {
+      mbedtls_aes_free(&aes);
+      free(blob);
+      *error_json = strdup("{\"error\":\"AES setup failed\"}");
+      return NULL;
+    }
+
+    uint8_t *plaintext = (uint8_t *)malloc(ct_len);
+    uint8_t iv_copy[16];
+    memcpy(iv_copy, iv, 16);
+
+    ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, ct_len, iv_copy,
+                                ciphertext, plaintext);
+    mbedtls_aes_free(&aes);
+    free(blob);
+
+    if (ret != 0) {
+      free(plaintext);
+      *error_json = strdup("{\"error\":\"Decryption failed\"}");
+      return NULL;
+    }
+
+    *out_len = ct_len;
+    return plaintext;
+  }
+
 public:
   ZKAuth() : initialized(false) {
     mbedtls_ecp_group_init(&grp);
@@ -170,146 +324,25 @@ public:
 
     printf("\n=== Processing Unlock Request ===\n");
 
-    // --- ECDH shared secret ---
-    size_t client_pub_len = strlen(client_pub_hex) / 2;
-    uint8_t *client_pub_bin = (uint8_t *)malloc(client_pub_len);
-    if (!hex_to_bin(client_pub_hex, client_pub_bin, client_pub_len)) {
-      free(client_pub_bin);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Invalid client public key format\"}");
-    }
+    size_t plaintext_len = 0;
+    char *error_msg = NULL;
+    uint8_t *decrypted = decrypt_ecies_payload(
+        client_pub_hex, encrypted_blob_hex, &plaintext_len, &error_msg);
+    cJSON_Delete(doc);
 
-    mbedtls_ecp_point client_point;
-    mbedtls_ecp_point_init(&client_point);
+    if (!decrypted)
+      return error_msg;
 
-    int ret = mbedtls_ecp_point_read_binary(&grp, &client_point, client_pub_bin,
-                                            client_pub_len);
-    free(client_pub_bin);
-
-    if (ret != 0) {
-      mbedtls_ecp_point_free(&client_point);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Invalid client public key\"}");
-    }
-
-    mbedtls_mpi shared_secret_mpi;
-    mbedtls_mpi_init(&shared_secret_mpi);
-
-    ret = mbedtls_ecdh_compute_shared(&grp, &shared_secret_mpi, &client_point,
-                                      &device_private_d,
-                                      mbedtls_ctr_drbg_random, &ctr_drbg);
-    mbedtls_ecp_point_free(&client_point);
-
-    if (ret != 0) {
-      mbedtls_mpi_free(&shared_secret_mpi);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"ECDH failed\"}");
-    }
-
-    uint8_t shared_secret_raw[32];
-    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 32);
-    mbedtls_mpi_free(&shared_secret_mpi);
-
-    if (ret != 0) {
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Shared secret export failed\"}");
-    }
-
-    // --- Derive encryption & MAC keys from shared secret ---
-    const mbedtls_md_info_t *md_info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-
-    uint8_t enc_key[32], mac_key[32];
-    mbedtls_md_context_t md_ctx;
-    mbedtls_md_init(&md_ctx);
-    mbedtls_md_setup(&md_ctx, md_info, 0);
-
-    mbedtls_md_starts(&md_ctx);
-    mbedtls_md_update(&md_ctx, (const uint8_t *)"encryption", 10);
-    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
-    mbedtls_md_finish(&md_ctx, enc_key);
-
-    mbedtls_md_starts(&md_ctx);
-    mbedtls_md_update(&md_ctx, (const uint8_t *)"authentication", 14);
-    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
-    mbedtls_md_finish(&md_ctx, mac_key);
-    mbedtls_md_free(&md_ctx);
-
-    mbedtls_platform_zeroize(shared_secret_raw, 32);
-
-    // --- Decrypt ECIES blob: IV(16) + Ciphertext(32) + HMAC(32) = 80 ---
-    size_t encrypted_len = strlen(encrypted_blob_hex) / 2;
-    uint8_t *encrypted_blob = (uint8_t *)malloc(encrypted_len);
-    if (!hex_to_bin(encrypted_blob_hex, encrypted_blob, encrypted_len) ||
-        encrypted_len != 80) {
-      free(encrypted_blob);
-      mbedtls_platform_zeroize(enc_key, 32);
-      mbedtls_platform_zeroize(mac_key, 32);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Invalid blob\"}");
-    }
-
-    uint8_t *iv = encrypted_blob;
-    uint8_t *ciphertext = encrypted_blob + 16;
-    uint8_t *received_hmac = encrypted_blob + 48;
-
-    // Verify HMAC before decryption
-    uint8_t computed_hmac[32];
-    ret = mbedtls_md_hmac(md_info, mac_key, 32, encrypted_blob, 48,
-                          computed_hmac);
-    mbedtls_platform_zeroize(mac_key, 32);
-
-    if (ret != 0) {
-      free(encrypted_blob);
-      mbedtls_platform_zeroize(enc_key, 32);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"HMAC computation failed\"}");
-    }
-
-    // Constant-time comparison
-    int hmac_result = 0;
-    for (int i = 0; i < 32; i++)
-      hmac_result |= received_hmac[i] ^ computed_hmac[i];
-
-    if (hmac_result != 0) {
-      free(encrypted_blob);
-      mbedtls_platform_zeroize(enc_key, 32);
-      cJSON_Delete(doc);
-      printf("HMAC verification FAILED\n");
-      return strdup(
-          "{\"error\":\"Authentication failed - data tampered or wrong key\"}");
-    }
-
-    // AES-CBC decrypt
-    mbedtls_aes_context aes;
-    mbedtls_aes_init(&aes);
-    ret = mbedtls_aes_setkey_dec(&aes, enc_key, 256);
-    mbedtls_platform_zeroize(enc_key, 32);
-
-    if (ret != 0) {
-      mbedtls_aes_free(&aes);
-      free(encrypted_blob);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"AES setup failed\"}");
-    }
-
-    uint8_t decrypted_hash[32];
-    uint8_t iv_copy[16];
-    memcpy(iv_copy, iv, 16);
-
-    ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, 32, iv_copy,
-                                ciphertext, decrypted_hash);
-    mbedtls_aes_free(&aes);
-    free(encrypted_blob);
-
-    if (ret != 0) {
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Decryption failed\"}");
+    if (plaintext_len != 32) {
+      mbedtls_platform_zeroize(decrypted, plaintext_len);
+      free(decrypted);
+      return strdup("{\"error\":\"Invalid payload size\"}");
     }
 
     // --- Store password hash and derive keys for verification ---
-    memcpy(keystore.password_hash, decrypted_hash, 32);
-    mbedtls_platform_zeroize(decrypted_hash, 32);
+    memcpy(keystore.password_hash, decrypted, 32);
+    mbedtls_platform_zeroize(decrypted, 32);
+    free(decrypted);
     keystore.activated = true;
 
     // --- Derive keys, verify or store public keys ---
@@ -344,10 +377,103 @@ public:
 
     char *response_str = cJSON_PrintUnformatted(resp_doc);
     cJSON_Delete(resp_doc);
-    cJSON_Delete(doc);
 
     *success_out = verification_result;
     return response_str;
+  }
+
+  // Process password change request.
+  // Expects ECIES blob containing old_hash(32) + new_hash(32) = 64 bytes.
+  // Verifies old password, derives new keys from new password, overwrites NVS.
+  char *process_change_password(const char *json_payload, bool *success_out) {
+    *success_out = false;
+
+    if (!initialized)
+      return strdup("{\"error\":\"Not initialized\"}");
+    if (!unlocked)
+      return strdup("{\"error\":\"Device not unlocked\"}");
+
+    cJSON *doc = cJSON_Parse(json_payload);
+    if (!doc)
+      return strdup("{\"error\":\"Invalid JSON\"}");
+
+    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
+    cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
+
+    const char *client_pub_hex =
+        cJSON_IsString(client_pub_item) ? client_pub_item->valuestring : NULL;
+    const char *encrypted_blob_hex = cJSON_IsString(encrypted_blob_item)
+                                         ? encrypted_blob_item->valuestring
+                                         : NULL;
+
+    if (!client_pub_hex || !encrypted_blob_hex) {
+      cJSON_Delete(doc);
+      return strdup("{\"error\":\"Missing required fields\"}");
+    }
+
+    printf("\n=== Processing Password Change ===\n");
+
+    size_t plaintext_len = 0;
+    char *error_msg = NULL;
+    uint8_t *decrypted = decrypt_ecies_payload(
+        client_pub_hex, encrypted_blob_hex, &plaintext_len, &error_msg);
+    cJSON_Delete(doc);
+
+    if (!decrypted)
+      return error_msg;
+
+    if (plaintext_len != 64) {
+      mbedtls_platform_zeroize(decrypted, plaintext_len);
+      free(decrypted);
+      return strdup("{\"error\":\"Invalid payload size\"}");
+    }
+
+    // First 32 bytes = old password hash, last 32 = new password hash
+    uint8_t old_hash[32], new_hash[32];
+    memcpy(old_hash, decrypted, 32);
+    memcpy(new_hash, decrypted + 32, 32);
+    mbedtls_platform_zeroize(decrypted, 64);
+    free(decrypted);
+
+    // Verify old password by deriving keys and comparing to NVS
+    memcpy(keystore.password_hash, old_hash, 32);
+    mbedtls_platform_zeroize(old_hash, 32);
+    keystore.activated = true;
+
+    if (!keystore.derive_and_verify() || !keystore.verify_public_keys()) {
+      keystore.wipe_secrets();
+      mbedtls_platform_zeroize(new_hash, 32);
+      printf("Password change FAILED: old password incorrect\n");
+      return strdup(
+          "{\"success\":false,\"error\":\"Current password incorrect\"}");
+    }
+
+    printf("Old password verified, deriving new keys...\n");
+
+    // Derive new keys from new password hash
+    memcpy(keystore.password_hash, new_hash, 32);
+    mbedtls_platform_zeroize(new_hash, 32);
+    keystore.activated = true;
+
+    if (!keystore.derive_and_verify()) {
+      keystore.wipe_secrets();
+      printf("Password change FAILED: key derivation error\n");
+      return strdup(
+          "{\"success\":false,\"error\":\"Failed to derive new keys\"}");
+    }
+
+    // Store new public keys in NVS (overwrites old ones)
+    if (!keystore.store_public_keys()) {
+      keystore.wipe_secrets();
+      printf("Password change FAILED: NVS write error\n");
+      return strdup(
+          "{\"success\":false,\"error\":\"Failed to store new keys\"}");
+    }
+
+    printf("Password changed successfully — keys rotated\n");
+    *success_out = true;
+    return strdup(
+        "{\"success\":true,\"message\":\"Password changed and keys rotated\"}");
   }
 
   bool is_unlocked() const { return unlocked; }

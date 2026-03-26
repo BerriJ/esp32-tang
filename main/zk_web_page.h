@@ -366,6 +366,20 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
         .setup-box strong {
             color: #e65100;
         }
+        
+        .warning-box {
+            background: #fff3e0;
+            border-left: 4px solid #e65100;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+            font-size: 13px;
+            color: #555;
+        }
+        
+        .warning-box strong {
+            color: #e65100;
+        }
     </style>
 </head>
 <body>
@@ -434,8 +448,40 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                     <span class="status-value" id="uptime">--</span>
                 </div>
             </div>
+            <button class="btn" onclick="showChangePasswordPage()" style="margin-bottom: 10px;">
+                Change Password
+            </button>
             <button class="btn btn-secondary" onclick="lockDevice()">
                 Lock Device
+            </button>
+        </div>
+        
+        <div id="changePasswordPage" class="status-page">
+            <h1>Change Password</h1>
+            <p class="subtitle">Update password and rotate Tang keys</p>
+            
+            <div class="warning-box">
+                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Key Rotation:</strong> Changing the password will generate new Tang encryption keys. Clients bound to the old keys will need to be re-enrolled.
+            </div>
+            
+            <div class="form-group">
+                <label for="currentPassword">Current Password</label>
+                <input type="password" id="currentPassword" placeholder="Enter current password" autocomplete="off">
+            </div>
+            
+            <div class="form-group">
+                <label for="newPassword">New Password</label>
+                <input type="password" id="newPassword" placeholder="Enter new password" autocomplete="off">
+            </div>
+            
+            <button class="btn" onclick="performPasswordChange()" id="changeBtn">
+                Change Password
+            </button>
+            
+            <div id="changeStatus"></div>
+            
+            <button class="btn btn-secondary" onclick="backToStatus()" style="margin-top: 10px;">
+                Back
             </button>
         </div>
     </div>
@@ -799,6 +845,187 @@ function formatUptime(milliseconds) {
     }
 }
 
+// Build an ECIES-encrypted payload for the device's ephemeral tunnel key.
+// plaintextWordArray must be a CryptoJS WordArray whose length is a multiple of 16 bytes.
+// Returns { clientPubHex, blobHex }.
+async function buildEciesPayload(plaintextWordArray) {
+    if (!deviceIdentity) {
+        const loaded = await loadDeviceIdentity();
+        if (!loaded) throw new Error('Failed to load device identity');
+    }
+
+    let sharedSecretBytes = null;
+    let clientKey = null;
+
+    try {
+        const ec = new elliptic.ec('p256');
+        clientKey = ec.genKeyPair();
+        const clientPubHex = clientKey.getPublic('hex');
+
+        const serverKey = ec.keyFromPublic(deviceIdentity.pubKey, 'hex');
+        const sharedPoint = clientKey.derive(serverKey.getPublic());
+        const sharedSecretHex = sharedPoint.toString(16).padStart(64, '0');
+        sharedSecretBytes = hexToBytes(sharedSecretHex);
+
+        const sharedSecretWA = byteArrayToWordArray(sharedSecretBytes);
+
+        const encKeyHash = CryptoJS.SHA256(
+            CryptoJS.enc.Utf8.parse('encryption').concat(sharedSecretWA)
+        );
+        const encKeyBytes = wordArrayToByteArray(encKeyHash);
+
+        const macKeyHash = CryptoJS.SHA256(
+            CryptoJS.enc.Utf8.parse('authentication').concat(sharedSecretWA)
+        );
+        const macKeyBytes = wordArrayToByteArray(macKeyHash);
+
+        secureWipeArray(sharedSecretBytes);
+        secureWipeWordArray(sharedSecretWA);
+
+        const ivWords = CryptoJS.lib.WordArray.random(16);
+        const encKey = byteArrayToWordArray(encKeyBytes);
+
+        const encrypted = CryptoJS.AES.encrypt(
+            plaintextWordArray,
+            encKey,
+            { iv: ivWords, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.NoPadding }
+        );
+
+        const ivBytes = wordArrayToByteArray(ivWords);
+        const ciphertextBytes = wordArrayToByteArray(encrypted.ciphertext);
+
+        const blobLen = 16 + ciphertextBytes.length + 32;
+        const completeBlob = new Uint8Array(blobLen);
+        completeBlob.set(ivBytes, 0);
+        completeBlob.set(ciphertextBytes, 16);
+
+        const dataToAuth = byteArrayToWordArray(Array.from(completeBlob.slice(0, 16 + ciphertextBytes.length)));
+        const macKey = byteArrayToWordArray(macKeyBytes);
+        const hmac = CryptoJS.HmacSHA256(dataToAuth, macKey);
+        const hmacBytes = wordArrayToByteArray(hmac);
+
+        completeBlob.set(hmacBytes, 16 + ciphertextBytes.length);
+
+        secureWipeArray(encKeyBytes);
+        secureWipeArray(macKeyBytes);
+        secureWipeWordArray(encKeyHash);
+        secureWipeWordArray(macKeyHash);
+        secureWipeWordArray(encKey);
+        secureWipeWordArray(macKey);
+        secureWipeWordArray(ivWords);
+        secureWipeWordArray(dataToAuth);
+        secureWipeWordArray(hmac);
+
+        return { clientPubHex, blobHex: bytesToHex(Array.from(completeBlob)) };
+    } finally {
+        if (sharedSecretBytes) secureWipeArray(sharedSecretBytes);
+        if (clientKey && clientKey.priv && clientKey.priv.words) {
+            for (let i = 0; i < clientKey.priv.words.length; i++) {
+                clientKey.priv.words[i] = 0;
+            }
+        }
+    }
+}
+
+function showChangeStatus(message, type, showLoader = false) {
+    const status = document.getElementById('changeStatus');
+    status.className = 'status-' + type;
+    status.style.display = 'block';
+    if (showLoader) {
+        status.innerHTML = '<div class="loader"></div>' + message;
+    } else {
+        status.innerHTML = message;
+    }
+}
+
+function showChangePasswordPage() {
+    document.getElementById('statusPage').classList.remove('active');
+    document.getElementById('changePasswordPage').classList.add('active');
+    loadDeviceIdentity();
+}
+
+function backToStatus() {
+    document.getElementById('changePasswordPage').classList.remove('active');
+    document.getElementById('currentPassword').value = '';
+    document.getElementById('newPassword').value = '';
+    document.getElementById('changeStatus').style.display = 'none';
+    document.getElementById('statusPage').classList.add('active');
+}
+
+async function performPasswordChange() {
+    const currentPwInput = document.getElementById('currentPassword');
+    const newPwInput = document.getElementById('newPassword');
+    const currentPw = currentPwInput.value;
+    const newPw = newPwInput.value;
+
+    if (!currentPw || !newPw) {
+        showChangeStatus('Please fill in both fields', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('changeBtn');
+    btn.disabled = true;
+    showChangeStatus('Initializing...', 'info', true);
+
+    let oldKeyHash = null;
+    let newKeyHash = null;
+
+    try {
+        if (!deviceIdentity) {
+            const loaded = await loadDeviceIdentity();
+            if (!loaded) { btn.disabled = false; return; }
+        }
+
+        showChangeStatus('Deriving keys...', 'info', true);
+
+        const macBytes = hexToBytes(deviceIdentity.macAddress);
+        const salt = byteArrayToWordArray(macBytes);
+
+        oldKeyHash = CryptoJS.PBKDF2(currentPw, salt, {
+            keySize: 256/32, iterations: 10000, hasher: CryptoJS.algo.SHA256
+        });
+        currentPwInput.value = '';
+
+        newKeyHash = CryptoJS.PBKDF2(newPw, salt, {
+            keySize: 256/32, iterations: 10000, hasher: CryptoJS.algo.SHA256
+        });
+        newPwInput.value = '';
+
+        // Concatenate: old_hash(32) + new_hash(32) = 64 bytes
+        const combined = oldKeyHash.clone().concat(newKeyHash);
+
+        showChangeStatus('Encrypting...', 'info', true);
+        const { clientPubHex, blobHex } = await buildEciesPayload(combined);
+
+        secureWipeWordArray(combined);
+
+        showChangeStatus('Sending request...', 'info', true);
+        const response = await fetch('/api/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clientPub: clientPubHex, blob: blobHex })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            showChangeStatus('Password changed successfully! Keys have been rotated.', 'success');
+            setTimeout(() => backToStatus(), 2000);
+        } else {
+            showChangeStatus('Failed: ' + (result.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        showChangeStatus('Error: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        currentPwInput.value = '';
+        newPwInput.value = '';
+        if (oldKeyHash) secureWipeWordArray(oldKeyHash);
+        if (newKeyHash) secureWipeWordArray(newKeyHash);
+    }
+}
+
 // On load: ask server which view to show
 window.addEventListener('load', async () => {
     try {
@@ -830,6 +1057,18 @@ window.addEventListener('load', async () => {
 document.getElementById('password').addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         performSecureUnlock();
+    }
+});
+
+document.getElementById('currentPassword').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        document.getElementById('newPassword').focus();
+    }
+});
+
+document.getElementById('newPassword').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        performPasswordChange();
     }
 });
 
