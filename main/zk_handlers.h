@@ -69,10 +69,12 @@ static esp_err_t handle_zk_unlock(httpd_req_t *req) {
 static esp_err_t handle_zk_status(httpd_req_t *req) {
   unsigned long uptime_ms = esp_timer_get_time() / 1000;
   char response[192];
-  snprintf(response, sizeof(response),
-           "{\"unlocked\":%s,\"configured\":%s,\"uptime\":%lu}",
-           zk_auth.is_unlocked() ? "true" : "false",
-           keystore.has_exchange_key() ? "true" : "false", uptime_ms);
+  snprintf(
+      response, sizeof(response),
+      "{\"unlocked\":%s,\"configured\":%s,\"gen\":%u,\"uptime\":%lu}",
+      zk_auth.is_unlocked() ? "true" : "false",
+      keystore.has_exchange_key() ? "true" : "false", keystore.gen,
+      uptime_ms);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -114,6 +116,34 @@ static esp_err_t handle_zk_change_password(httpd_req_t *req) {
   httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
   httpd_resp_sendstr(req, response);
   free(response);
+  return ESP_OK;
+}
+
+// API endpoint: Rotate to next exchange key generation (requires unlock)
+static esp_err_t handle_zk_rotate(httpd_req_t *req) {
+  if (!zk_auth.is_unlocked()) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr(req, "{\"error\":\"Device not unlocked\"}");
+    return ESP_FAIL;
+  }
+
+  if (!keystore.rotate()) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_sendstr(req, "{\"error\":\"Rotation failed\"}");
+    return ESP_FAIL;
+  }
+
+  char response[64];
+  snprintf(response, sizeof(response),
+           "{\"success\":true,\"gen\":%u}", keystore.gen);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, response);
   return ESP_OK;
 }
 
@@ -179,6 +209,18 @@ void register_zk_handlers(httpd_handle_t server) {
                                              .user_ctx = NULL};
   httpd_register_uri_handler(server, &change_password_options_uri);
 
+  httpd_uri_t rotate_uri = {.uri = "/api/rotate",
+                            .method = HTTP_POST,
+                            .handler = handle_zk_rotate,
+                            .user_ctx = NULL};
+  httpd_register_uri_handler(server, &rotate_uri);
+
+  httpd_uri_t rotate_options_uri = {.uri = "/api/rotate",
+                                    .method = HTTP_OPTIONS,
+                                    .handler = handle_zk_options,
+                                    .user_ctx = NULL};
+  httpd_register_uri_handler(server, &rotate_options_uri);
+
   ESP_LOGI(TAG_ZK, "ZK Auth routes registered:");
   ESP_LOGI(TAG_ZK, "  GET  /             - Web interface");
   ESP_LOGI(TAG_ZK, "  GET  /api/identity - Device identity");
@@ -186,6 +228,7 @@ void register_zk_handlers(httpd_handle_t server) {
   ESP_LOGI(TAG_ZK, "  POST /api/unlock   - Unlock request");
   ESP_LOGI(TAG_ZK, "  POST /api/lock     - Lock device");
   ESP_LOGI(TAG_ZK, "  POST /api/change-password - Change password");
+  ESP_LOGI(TAG_ZK, "  POST /api/rotate   - Rotate exchange key");
 }
 
 #endif // ZK_HANDLERS_H

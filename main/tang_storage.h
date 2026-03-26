@@ -12,23 +12,43 @@
 
 static const char *TAG_STORAGE = "tang_storage";
 
+const int NUM_EXCHANGE_KEYS = 3;
+
 class TangKeyStore {
 public:
   // Public keys (loaded from NVS at boot, available without activation)
   uint8_t sig_pub[P256_PUBLIC_KEY_SIZE];
   bool sig_loaded;
 
-  uint8_t exc_pub[P256_PUBLIC_KEY_SIZE];
+  // Exchange public keys stored in 3 slots (ring buffer indexed by gen % 3)
+  uint8_t exc_pub[NUM_EXCHANGE_KEYS][P256_PUBLIC_KEY_SIZE];
   bool exc_pub_loaded;
+
+  // Generation counter (monotonically increasing, newest key).
+  // Active keys are: gen, gen-1, gen-2.  Slot = generation % 3.
+  // Starts at 2 so first activation produces 3 keys (gens 0, 1, 2).
+  unsigned int gen;
 
   // Password hash kept in RAM after activation (PBKDF2 output from browser)
   uint8_t password_hash[32];
   bool activated;
 
-  TangKeyStore() : sig_loaded(false), exc_pub_loaded(false), activated(false) {
+  TangKeyStore()
+      : sig_loaded(false), exc_pub_loaded(false), gen(2), activated(false) {
     memset(sig_pub, 0, sizeof(sig_pub));
     memset(exc_pub, 0, sizeof(exc_pub));
     memset(password_hash, 0, sizeof(password_hash));
+  }
+
+  // Slot index (0..2) for a given generation number
+  static int slot(unsigned int generation) {
+    return (int)(generation % NUM_EXCHANGE_KEYS);
+  }
+
+  // NVS key name for a slot
+  static const char *exc_pub_nvs_key(int s) {
+    static const char *keys[] = {"exc_pub_0", "exc_pub_1", "exc_pub_2"};
+    return keys[s];
   }
 
   // Check if public keys exist in NVS (i.e. device was activated before)
@@ -39,7 +59,7 @@ public:
       return false;
 
     size_t len = 0;
-    err = nvs_get_blob(handle, "exc_pub", nullptr, &len);
+    err = nvs_get_blob(handle, "exc_pub_0", nullptr, &len);
     bool found = (err == ESP_OK && len == P256_PUBLIC_KEY_SIZE);
     nvs_close(handle);
     return found;
@@ -58,10 +78,8 @@ public:
     return found;
   }
 
-  // Derive the master key from password_hash via hardware HMAC, then derive
-  // signing and exchange private keys using HMAC-SHA256 with domain separation.
-  // Writes results into caller-provided buffers. Wipes intermediates on return.
-  bool derive_private_keys(uint8_t *sig_priv_out, uint8_t *exc_priv_out) {
+  // Derive signing private key from password hash via hardware HMAC.
+  bool derive_signing_key(uint8_t *sig_priv_out) {
     if (!activated)
       return false;
 
@@ -74,67 +92,91 @@ public:
     const mbedtls_md_info_t *md_info =
         mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
 
-    bool ok = true;
-
     // sig_priv = HMAC-SHA256(master_key, "tang-signing-key")
-    if (sig_priv_out) {
-      if (mbedtls_md_hmac(md_info, master_key, 32,
-                          (const uint8_t *)"tang-signing-key", 16,
-                          sig_priv_out) != 0) {
-        ESP_LOGE(TAG_STORAGE, "Failed to derive signing key");
-        ok = false;
-      }
-    }
-
-    // exc_priv = HMAC-SHA256(master_key, "tang-exchange-key")
-    if (ok && exc_priv_out) {
-      if (mbedtls_md_hmac(md_info, master_key, 32,
-                          (const uint8_t *)"tang-exchange-key", 17,
-                          exc_priv_out) != 0) {
-        ESP_LOGE(TAG_STORAGE, "Failed to derive exchange key");
-        ok = false;
-      }
-    }
-
+    int ret =
+        mbedtls_md_hmac(md_info, master_key, 32,
+                        (const uint8_t *)"tang-signing-key", 16, sig_priv_out);
     mbedtls_platform_zeroize(master_key, sizeof(master_key));
-    return ok;
-  }
 
-  // Derive both keys, compute public keys, and verify against NVS.
-  // Used during activation to confirm password correctness.
-  bool derive_and_verify() {
-    uint8_t sig_priv[P256_PRIVATE_KEY_SIZE];
-    uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
-
-    if (!derive_private_keys(sig_priv, exc_priv)) {
+    if (ret != 0) {
+      ESP_LOGE(TAG_STORAGE, "Failed to derive signing key");
       return false;
     }
-
-    // Compute public keys from derived private keys
-    uint8_t derived_sig_pub[P256_PUBLIC_KEY_SIZE];
-    uint8_t derived_exc_pub[P256_PUBLIC_KEY_SIZE];
-
-    bool ok = P256::compute_public_key(sig_priv, derived_sig_pub) &&
-              P256::compute_public_key(exc_priv, derived_exc_pub);
-
-    mbedtls_platform_zeroize(sig_priv, sizeof(sig_priv));
-    mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
-
-    if (!ok) {
-      ESP_LOGE(TAG_STORAGE, "Failed to compute public keys");
-      return false;
-    }
-
-    // Copy to member public keys (used by /adv)
-    memcpy(sig_pub, derived_sig_pub, P256_PUBLIC_KEY_SIZE);
-    memcpy(exc_pub, derived_exc_pub, P256_PUBLIC_KEY_SIZE);
-    sig_loaded = true;
-    exc_pub_loaded = true;
-
     return true;
   }
 
-  // Store derived public keys to NVS (first-time activation only)
+  // Derive exchange private key for a specific generation (any counter value).
+  bool derive_exchange_key(unsigned int generation, uint8_t *exc_priv_out) {
+    if (!activated)
+      return false;
+
+    uint8_t master_key[32];
+    if (!derive_aes_key(password_hash, master_key)) {
+      ESP_LOGE(TAG_STORAGE, "Hardware HMAC failed");
+      return false;
+    }
+
+    const mbedtls_md_info_t *md_info =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+    // exc_priv = HMAC-SHA256(master_key, "tang-exchange-key-{gen}")
+    char info[32];
+    int info_len =
+        snprintf(info, sizeof(info), "tang-exchange-key-%u", generation);
+
+    int ret = mbedtls_md_hmac(md_info, master_key, 32, (const uint8_t *)info,
+                              info_len, exc_priv_out);
+    mbedtls_platform_zeroize(master_key, sizeof(master_key));
+
+    if (ret != 0) {
+      ESP_LOGE(TAG_STORAGE, "Failed to derive exchange key gen %u", generation);
+      return false;
+    }
+    return true;
+  }
+
+  // Derive all keys, compute public keys.
+  // Derives signing key + exchange keys for gen, gen-1, gen-2.
+  bool derive_and_verify() {
+    // Derive signing key and compute public key
+    uint8_t sig_priv[P256_PRIVATE_KEY_SIZE];
+    if (!derive_signing_key(sig_priv))
+      return false;
+
+    bool ok = P256::compute_public_key(sig_priv, sig_pub);
+    mbedtls_platform_zeroize(sig_priv, sizeof(sig_priv));
+
+    if (!ok) {
+      ESP_LOGE(TAG_STORAGE, "Failed to compute signing public key");
+      return false;
+    }
+    sig_loaded = true;
+
+    // Derive 3 active exchange keys: gen, gen-1, gen-2
+    for (int offset = 0; offset < NUM_EXCHANGE_KEYS; offset++) {
+      unsigned int g = gen - offset;
+      int s = slot(g);
+
+      uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
+      if (!derive_exchange_key(g, exc_priv))
+        return false;
+
+      ok = P256::compute_public_key(exc_priv, exc_pub[s]);
+      mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
+
+      if (!ok) {
+        ESP_LOGE(TAG_STORAGE,
+                 "Failed to compute exchange public key gen %u (slot %d)", g,
+                 s);
+        return false;
+      }
+    }
+
+    exc_pub_loaded = true;
+    return true;
+  }
+
+  // Store all public keys + gen counter to NVS
   bool store_public_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
@@ -144,8 +186,13 @@ public:
     bool ok = true;
     ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub,
                              P256_PUBLIC_KEY_SIZE) == ESP_OK);
-    ok = ok && (nvs_set_blob(handle, "exc_pub", exc_pub,
-                             P256_PUBLIC_KEY_SIZE) == ESP_OK);
+
+    for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
+      ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
+                               P256_PUBLIC_KEY_SIZE) == ESP_OK);
+    }
+
+    ok = ok && (nvs_set_u32(handle, "gen", (uint32_t)gen) == ESP_OK);
 
     if (ok)
       ok = (nvs_commit(handle) == ESP_OK);
@@ -153,46 +200,47 @@ public:
     nvs_close(handle);
 
     if (ok)
-      ESP_LOGI(TAG_STORAGE, "Public keys stored in NVS");
+      ESP_LOGI(TAG_STORAGE, "Public keys stored in NVS (gen %u, keys %u/%u/%u)",
+               gen, gen, gen - 1, gen - 2);
     return ok;
   }
 
   // Verify that derived public keys match the ones stored in NVS.
-  // This replaces GCM tag verification as the password check.
   bool verify_public_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
     if (err != ESP_OK)
       return false;
 
-    uint8_t stored_sig_pub[P256_PUBLIC_KEY_SIZE];
-    uint8_t stored_exc_pub[P256_PUBLIC_KEY_SIZE];
-    size_t len;
-
-    len = P256_PUBLIC_KEY_SIZE;
-    if (nvs_get_blob(handle, "sig_pub", stored_sig_pub, &len) != ESP_OK) {
+    // Verify signing key
+    uint8_t stored[P256_PUBLIC_KEY_SIZE];
+    size_t len = P256_PUBLIC_KEY_SIZE;
+    if (nvs_get_blob(handle, "sig_pub", stored, &len) != ESP_OK ||
+        memcmp(sig_pub, stored, P256_PUBLIC_KEY_SIZE) != 0) {
       nvs_close(handle);
-      return false;
-    }
-
-    len = P256_PUBLIC_KEY_SIZE;
-    if (nvs_get_blob(handle, "exc_pub", stored_exc_pub, &len) != ESP_OK) {
-      nvs_close(handle);
-      return false;
-    }
-
-    nvs_close(handle);
-
-    if (memcmp(sig_pub, stored_sig_pub, P256_PUBLIC_KEY_SIZE) != 0 ||
-        memcmp(exc_pub, stored_exc_pub, P256_PUBLIC_KEY_SIZE) != 0) {
       ESP_LOGW(TAG_STORAGE,
-               "Public key mismatch — wrong password or wrong device");
+               "Signing key mismatch — wrong password or wrong device");
       sig_loaded = false;
       exc_pub_loaded = false;
       return false;
     }
 
-    ESP_LOGI(TAG_STORAGE, "Derived public keys match NVS — password verified");
+    // Verify all 3 exchange key slots
+    for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
+      len = P256_PUBLIC_KEY_SIZE;
+      if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
+          memcmp(exc_pub[s], stored, P256_PUBLIC_KEY_SIZE) != 0) {
+        nvs_close(handle);
+        ESP_LOGW(TAG_STORAGE, "Exchange key slot %d mismatch", s);
+        sig_loaded = false;
+        exc_pub_loaded = false;
+        return false;
+      }
+    }
+
+    nvs_close(handle);
+    ESP_LOGI(TAG_STORAGE,
+             "All derived public keys match NVS — password verified");
     return true;
   }
 
@@ -214,23 +262,77 @@ public:
     return false;
   }
 
-  // Load exchange public key from NVS (for /adv before activation)
-  bool load_exchange_pub() {
+  // Load all exchange public keys and generation counter from NVS
+  bool load_exchange_pubs() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
     if (err != ESP_OK)
       return false;
 
-    size_t len = P256_PUBLIC_KEY_SIZE;
-    err = nvs_get_blob(handle, "exc_pub", exc_pub, &len);
+    for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
+      size_t len = P256_PUBLIC_KEY_SIZE;
+      if (nvs_get_blob(handle, exc_pub_nvs_key(s), exc_pub[s], &len) !=
+              ESP_OK ||
+          len != P256_PUBLIC_KEY_SIZE) {
+        nvs_close(handle);
+        return false;
+      }
+    }
+
+    uint32_t stored_gen = 2;
+    if (nvs_get_u32(handle, "gen", &stored_gen) == ESP_OK) {
+      gen = (unsigned int)stored_gen;
+    }
+
+    nvs_close(handle);
+    exc_pub_loaded = true;
+    ESP_LOGI(TAG_STORAGE, "Exchange public keys loaded (gen %u, keys %u/%u/%u)",
+             gen, gen, gen - 1, gen - 2);
+    return true;
+  }
+
+  // Rotate: increment gen, derive new key, overwrite oldest slot in NVS.
+  // Requires activation (password hash must be in RAM).
+  bool rotate() {
+    if (!activated)
+      return false;
+
+    unsigned int new_gen = gen + 1;
+    int s = slot(new_gen);
+
+    // Derive new exchange key and compute its public key
+    uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
+    if (!derive_exchange_key(new_gen, exc_priv))
+      return false;
+
+    bool ok = P256::compute_public_key(exc_priv, exc_pub[s]);
+    mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
+
+    if (!ok) {
+      ESP_LOGE(TAG_STORAGE, "Failed to compute public key for gen %u", new_gen);
+      return false;
+    }
+
+    // Persist the new slot and updated gen counter
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
+    if (err != ESP_OK)
+      return false;
+
+    ok = (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
+                        P256_PUBLIC_KEY_SIZE) == ESP_OK) &&
+         (nvs_set_u32(handle, "gen", (uint32_t)new_gen) == ESP_OK) &&
+         (nvs_commit(handle) == ESP_OK);
     nvs_close(handle);
 
-    if (err == ESP_OK && len == P256_PUBLIC_KEY_SIZE) {
-      exc_pub_loaded = true;
-      ESP_LOGI(TAG_STORAGE, "Exchange public key loaded from NVS");
-      return true;
+    if (ok) {
+      unsigned int dropped = gen - 2;
+      gen = new_gen;
+      ESP_LOGI(TAG_STORAGE,
+               "Rotated: gen %u (dropped %u, active %u/%u/%u)", gen, dropped,
+               gen, gen - 1, gen - 2);
     }
-    return false;
+    return ok;
   }
 
   void wipe_secrets() {

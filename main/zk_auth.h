@@ -454,6 +454,7 @@ public:
     memcpy(keystore.password_hash, new_hash, 32);
     mbedtls_platform_zeroize(new_hash, 32);
     keystore.activated = true;
+    keystore.gen = 2; // Reset rotation — all keys change with new password
 
     if (!keystore.derive_and_verify()) {
       keystore.wipe_secrets();

@@ -175,13 +175,14 @@ void setup() {
     ESP_LOGI(TAG, "No signing key yet — will be created on first password");
   }
 
-  // 4. Load exchange public key if available (for /adv before activation)
+  // 4. Load exchange public keys if available (for /adv before activation)
   if (keystore.has_exchange_key()) {
-    if (keystore.load_exchange_pub()) {
-      ESP_LOGI(TAG, "Exchange public key loaded — /adv available");
+    if (keystore.load_exchange_pubs()) {
+      ESP_LOGI(TAG, "Exchange public keys loaded (gen %u) — /adv available",
+               keystore.gen);
     }
   } else {
-    ESP_LOGI(TAG, "No exchange key yet — will be created on first password");
+    ESP_LOGI(TAG, "No exchange keys yet — will be created on first password");
   }
 
   // 5. Initialize Zero-Knowledge Authentication (ephemeral tunnel key)
