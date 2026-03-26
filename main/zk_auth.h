@@ -307,19 +307,15 @@ public:
       return strdup("{\"error\":\"Decryption failed\"}");
     }
 
-    // --- Device-bound key derivation via hardware HMAC ---
-    if (!derive_aes_key(decrypted_hash, keystore.master_key)) {
-      mbedtls_platform_zeroize(decrypted_hash, 32);
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Hardware HMAC failed\"}");
-    }
+    // --- Store password hash and derive keys for verification ---
+    memcpy(keystore.password_hash, decrypted_hash, 32);
     mbedtls_platform_zeroize(decrypted_hash, 32);
-    keystore.master_key_loaded = true;
+    keystore.activated = true;
 
-    // --- Derive keys from master and verify or store ---
+    // --- Derive keys, verify or store public keys ---
     bool verification_result = false;
 
-    if (keystore.derive_keys_from_master()) {
+    if (keystore.derive_and_verify()) {
       if (!keystore.has_exchange_key()) {
         // First activation: store derived public keys in NVS
         printf("First-time setup: storing derived public keys\n");

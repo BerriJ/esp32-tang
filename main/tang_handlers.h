@@ -7,6 +7,7 @@
 #include <cJSON.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
+#include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
 #include <string.h>
 
@@ -18,10 +19,9 @@ extern TangKeyStore keystore;
 extern bool unlocked;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
-// Available once signing key + exchange key exist (public keys are public).
-// Does NOT require activation — only /rec requires unlocked.
+// Requires activation since signing key is derived on-demand.
 static esp_err_t handle_adv(httpd_req_t *req) {
-  if (!keystore.sig_loaded || !keystore.exc_pub_loaded) {
+  if (!keystore.sig_loaded || !keystore.exc_pub_loaded || !keystore.activated) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_sendstr(req, "Server not configured");
     return ESP_FAIL;
@@ -101,8 +101,22 @@ static esp_err_t handle_adv(httpd_req_t *req) {
                  0);
   free(signing_input);
 
+  // Derive signing key on-demand, sign, then wipe
+  uint8_t sig_priv[P256_PRIVATE_KEY_SIZE];
+  if (!keystore.derive_private_keys(sig_priv, nullptr)) {
+    ESP_LOGE(TAG_HANDLERS, "Failed to derive signing key");
+    free(payload_b64);
+    free(protected_b64);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Key derivation failed");
+    return ESP_FAIL;
+  }
+
   uint8_t signature[64]; // r(32) + s(32)
-  if (!P256::sign(hash, 32, keystore.sig_priv, signature)) {
+  bool sign_ok = P256::sign(hash, 32, sig_priv, signature);
+  mbedtls_platform_zeroize(sig_priv, sizeof(sig_priv));
+
+  if (!sign_ok) {
     ESP_LOGE(TAG_HANDLERS, "Software signing failed");
     free(payload_b64);
     free(protected_b64);
@@ -189,10 +203,21 @@ static esp_err_t handle_rec(httpd_req_t *req) {
 
   cJSON_Delete(req_doc);
 
-  // Software ECDH
+  // Derive exchange key on-demand, compute ECDH, then wipe
+  uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
+  if (!keystore.derive_private_keys(nullptr, exc_priv)) {
+    ESP_LOGE(TAG_HANDLERS, "Failed to derive exchange key");
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Key derivation failed");
+    return ESP_FAIL;
+  }
+
   uint8_t shared_point[P256_PUBLIC_KEY_SIZE];
-  if (!P256::ecdh_compute_shared_point(client_pub_key, keystore.exc_priv,
-                                       shared_point, true)) {
+  bool ecdh_ok = P256::ecdh_compute_shared_point(client_pub_key, exc_priv,
+                                                 shared_point, true);
+  mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
+
+  if (!ecdh_ok) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "ECDH computation failed");
     return ESP_FAIL;
