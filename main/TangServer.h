@@ -166,20 +166,13 @@ void setup() {
     ESP_LOGI(TAG, "eFuse KEY5 already provisioned");
   }
 
-  // 3. Load or generate signing key (persistent, unencrypted)
+  // 3. Load signing public key if available (for reference before activation)
   if (keystore.has_signing_key()) {
-    if (keystore.load_signing_key()) {
-      ESP_LOGI(TAG, "Signing key loaded");
-    } else {
-      ESP_LOGW(TAG, "Failed to load signing key");
+    if (keystore.load_signing_pub()) {
+      ESP_LOGI(TAG, "Signing public key loaded");
     }
   } else {
-    ESP_LOGI(TAG, "First boot — generating signing key...");
-    if (keystore.generate_signing_key()) {
-      ESP_LOGI(TAG, "Signing key generated");
-    } else {
-      ESP_LOGE(TAG, "Failed to generate signing key");
-    }
+    ESP_LOGI(TAG, "No signing key yet — will be created on first password");
   }
 
   // 4. Load exchange public key if available (for /adv before activation)

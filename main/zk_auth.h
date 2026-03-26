@@ -316,16 +316,19 @@ public:
     }
     mbedtls_platform_zeroize(decrypted_hash, 32);
 
-    // --- First-time setup or decrypt existing exchange key ---
+    // --- First-time setup or decrypt existing keys ---
     bool verification_result = false;
 
     if (!keystore.has_exchange_key()) {
-      // First password entry: generate and encrypt exchange key
-      printf("First-time setup: generating exchange key\n");
-      verification_result = keystore.generate_and_encrypt_exchange_key(aes_key);
+      // First password entry: generate and encrypt both keys
+      printf("First-time setup: generating signing and exchange keys\n");
+      verification_result =
+          keystore.generate_and_encrypt_signing_key(aes_key) &&
+          keystore.generate_and_encrypt_exchange_key(aes_key);
     } else {
-      // Subsequent: decrypt existing exchange key (GCM tag = password check)
-      verification_result = keystore.decrypt_exchange_key(aes_key);
+      // Subsequent: decrypt both keys (GCM tag = password check)
+      verification_result = keystore.decrypt_signing_key(aes_key) &&
+                            keystore.decrypt_exchange_key(aes_key);
     }
 
     mbedtls_platform_zeroize(aes_key, 32);
@@ -355,8 +358,10 @@ public:
 
   void lock() {
     unlocked = false;
-    // Wipe exchange private key from RAM
+    // Wipe private keys from RAM
     mbedtls_platform_zeroize(keystore.exc_priv, sizeof(keystore.exc_priv));
+    mbedtls_platform_zeroize(keystore.sig_priv, sizeof(keystore.sig_priv));
+    keystore.sig_loaded = false;
   }
 };
 
