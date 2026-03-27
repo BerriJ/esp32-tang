@@ -18,12 +18,12 @@ const int NUM_EXCHANGE_KEYS = CONFIG_NUM_EXCHANGE_KEYS;
 class TangKeyStore {
 public:
   // Public keys (loaded from NVS at boot, available without activation)
-  uint8_t sig_pub[P256_PUBLIC_KEY_SIZE];
+  uint8_t sig_pub[EC_PUBLIC_KEY_SIZE];
   bool sig_loaded;
 
   // Exchange public keys stored in NUM_EXCHANGE_KEYS slots (ring buffer indexed
   // by gen % NUM_EXCHANGE_KEYS)
-  uint8_t exc_pub[NUM_EXCHANGE_KEYS][P256_PUBLIC_KEY_SIZE];
+  uint8_t exc_pub[NUM_EXCHANGE_KEYS][EC_PUBLIC_KEY_SIZE];
   bool exc_pub_loaded;
 
   // Generation counter (monotonically increasing, newest key).
@@ -44,7 +44,7 @@ public:
     memset(password_hash, 0, sizeof(password_hash));
   }
 
-  // Slot index (0..2) for a given generation number
+  // Slot index for a given generation number
   static int slot(unsigned int generation) {
     return (int)(generation % NUM_EXCHANGE_KEYS);
   }
@@ -65,7 +65,7 @@ public:
 
     size_t len = 0;
     err = nvs_get_blob(handle, "exc_pub_0", nullptr, &len);
-    bool found = (err == ESP_OK && len == P256_PUBLIC_KEY_SIZE);
+    bool found = (err == ESP_OK && len == EC_PUBLIC_KEY_SIZE);
     nvs_close(handle);
     return found;
   }
@@ -78,9 +78,71 @@ public:
 
     size_t len = 0;
     err = nvs_get_blob(handle, "sig_pub", nullptr, &len);
-    bool found = (err == ESP_OK && len == P256_PUBLIC_KEY_SIZE);
+    bool found = (err == ESP_OK && len == EC_PUBLIC_KEY_SIZE);
     nvs_close(handle);
     return found;
+  }
+
+  // Derive a 66-byte private key using HKDF-Expand-like construction with
+  // HMAC-SHA512. Two rounds produce 128 bytes; we take the first 66.
+  //   T1 = HMAC-SHA512(master_key, info || 0x01)
+  //   T2 = HMAC-SHA512(master_key, T1 || info || 0x02)
+  //   output = (T1 || T2)[0..EC_PRIVATE_KEY_SIZE]
+  static bool derive_ec_private_key(const uint8_t *master_key,
+                                    const uint8_t *info, size_t info_len,
+                                    uint8_t *out) {
+    const mbedtls_md_info_t *md_info =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA512);
+
+    // T1 = HMAC-SHA512(master_key, info || 0x01)
+    uint8_t t1[64];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    int ret = mbedtls_md_setup(&ctx, md_info, 1);
+    if (ret != 0) {
+      mbedtls_md_free(&ctx);
+      return false;
+    }
+
+    ret = mbedtls_md_hmac_starts(&ctx, master_key, 32);
+    if (ret == 0)
+      ret = mbedtls_md_hmac_update(&ctx, info, info_len);
+    uint8_t counter = 0x01;
+    if (ret == 0)
+      ret = mbedtls_md_hmac_update(&ctx, &counter, 1);
+    if (ret == 0)
+      ret = mbedtls_md_hmac_finish(&ctx, t1);
+
+    if (ret != 0) {
+      mbedtls_md_free(&ctx);
+      return false;
+    }
+
+    // T2 = HMAC-SHA512(master_key, T1 || info || 0x02)
+    uint8_t t2[64];
+    ret = mbedtls_md_hmac_reset(&ctx);
+    if (ret == 0)
+      ret = mbedtls_md_hmac_update(&ctx, t1, 64);
+    if (ret == 0)
+      ret = mbedtls_md_hmac_update(&ctx, info, info_len);
+    counter = 0x02;
+    if (ret == 0)
+      ret = mbedtls_md_hmac_update(&ctx, &counter, 1);
+    if (ret == 0)
+      ret = mbedtls_md_hmac_finish(&ctx, t2);
+    mbedtls_md_free(&ctx);
+
+    if (ret != 0)
+      return false;
+
+    // Take first EC_PRIVATE_KEY_SIZE (66) bytes from T1(64) || T2(64)
+    memcpy(out, t1, 64);
+    memcpy(out + 64, t2, EC_PRIVATE_KEY_SIZE - 64);
+
+    mbedtls_platform_zeroize(t1, sizeof(t1));
+    mbedtls_platform_zeroize(t2, sizeof(t2));
+
+    return true;
   }
 
   // Derive signing private key from password hash via hardware HMAC.
@@ -94,16 +156,12 @@ public:
       return false;
     }
 
-    const mbedtls_md_info_t *md_info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-
-    // sig_priv = HMAC-SHA256(master_key, "tang-signing-key")
-    int ret =
-        mbedtls_md_hmac(md_info, master_key, 32,
-                        (const uint8_t *)"tang-signing-key", 16, sig_priv_out);
+    const char *info = "tang-signing-key";
+    bool ok = derive_ec_private_key(master_key, (const uint8_t *)info,
+                                    strlen(info), sig_priv_out);
     mbedtls_platform_zeroize(master_key, sizeof(master_key));
 
-    if (ret != 0) {
+    if (!ok) {
       ESP_LOGE(TAG_STORAGE, "Failed to derive signing key");
       return false;
     }
@@ -121,19 +179,15 @@ public:
       return false;
     }
 
-    const mbedtls_md_info_t *md_info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-
-    // exc_priv = HMAC-SHA256(master_key, "tang-exchange-key-{gen}")
     char info[32];
     int info_len =
         snprintf(info, sizeof(info), "tang-exchange-key-%u", generation);
 
-    int ret = mbedtls_md_hmac(md_info, master_key, 32, (const uint8_t *)info,
-                              info_len, exc_priv_out);
+    bool ok = derive_ec_private_key(master_key, (const uint8_t *)info,
+                                    info_len, exc_priv_out);
     mbedtls_platform_zeroize(master_key, sizeof(master_key));
 
-    if (ret != 0) {
+    if (!ok) {
       ESP_LOGE(TAG_STORAGE, "Failed to derive exchange key gen %u", generation);
       return false;
     }
@@ -141,14 +195,13 @@ public:
   }
 
   // Derive all keys, compute public keys.
-  // Derives signing key + exchange keys for gen, gen-1, gen-2.
   bool derive_and_verify() {
     // Derive signing key and compute public key
-    uint8_t sig_priv[P256_PRIVATE_KEY_SIZE];
+    uint8_t sig_priv[EC_PRIVATE_KEY_SIZE];
     if (!derive_signing_key(sig_priv))
       return false;
 
-    bool ok = P256::compute_public_key(sig_priv, sig_pub);
+    bool ok = EC::compute_public_key(sig_priv, sig_pub);
     mbedtls_platform_zeroize(sig_priv, sizeof(sig_priv));
 
     if (!ok) {
@@ -162,11 +215,11 @@ public:
       unsigned int g = gen - offset;
       int s = slot(g);
 
-      uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
+      uint8_t exc_priv[EC_PRIVATE_KEY_SIZE];
       if (!derive_exchange_key(g, exc_priv))
         return false;
 
-      ok = P256::compute_public_key(exc_priv, exc_pub[s]);
+      ok = EC::compute_public_key(exc_priv, exc_pub[s]);
       mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
 
       if (!ok) {
@@ -190,11 +243,11 @@ public:
 
     bool ok = true;
     ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub,
-                             P256_PUBLIC_KEY_SIZE) == ESP_OK);
+                             EC_PUBLIC_KEY_SIZE) == ESP_OK);
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
       ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
-                               P256_PUBLIC_KEY_SIZE) == ESP_OK);
+                               EC_PUBLIC_KEY_SIZE) == ESP_OK);
     }
 
     ok = ok && (nvs_set_u32(handle, "gen", (uint32_t)gen) == ESP_OK);
@@ -218,10 +271,10 @@ public:
       return false;
 
     // Verify signing key
-    uint8_t stored[P256_PUBLIC_KEY_SIZE];
-    size_t len = P256_PUBLIC_KEY_SIZE;
+    uint8_t stored[EC_PUBLIC_KEY_SIZE];
+    size_t len = EC_PUBLIC_KEY_SIZE;
     if (nvs_get_blob(handle, "sig_pub", stored, &len) != ESP_OK ||
-        memcmp(sig_pub, stored, P256_PUBLIC_KEY_SIZE) != 0) {
+        memcmp(sig_pub, stored, EC_PUBLIC_KEY_SIZE) != 0) {
       nvs_close(handle);
       ESP_LOGW(TAG_STORAGE,
                "Signing key mismatch — wrong password or wrong device");
@@ -232,9 +285,9 @@ public:
 
     // Verify all exchange key slots
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      len = P256_PUBLIC_KEY_SIZE;
+      len = EC_PUBLIC_KEY_SIZE;
       if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
-          memcmp(exc_pub[s], stored, P256_PUBLIC_KEY_SIZE) != 0) {
+          memcmp(exc_pub[s], stored, EC_PUBLIC_KEY_SIZE) != 0) {
         nvs_close(handle);
         ESP_LOGW(TAG_STORAGE, "Exchange key slot %d mismatch", s);
         sig_loaded = false;
@@ -256,11 +309,11 @@ public:
     if (err != ESP_OK)
       return false;
 
-    size_t len = P256_PUBLIC_KEY_SIZE;
+    size_t len = EC_PUBLIC_KEY_SIZE;
     err = nvs_get_blob(handle, "sig_pub", sig_pub, &len);
     nvs_close(handle);
 
-    if (err == ESP_OK && len == P256_PUBLIC_KEY_SIZE) {
+    if (err == ESP_OK && len == EC_PUBLIC_KEY_SIZE) {
       ESP_LOGI(TAG_STORAGE, "Signing public key loaded from NVS");
       return true;
     }
@@ -275,10 +328,10 @@ public:
       return false;
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      size_t len = P256_PUBLIC_KEY_SIZE;
+      size_t len = EC_PUBLIC_KEY_SIZE;
       if (nvs_get_blob(handle, exc_pub_nvs_key(s), exc_pub[s], &len) !=
               ESP_OK ||
-          len != P256_PUBLIC_KEY_SIZE) {
+          len != EC_PUBLIC_KEY_SIZE) {
         nvs_close(handle);
         return false;
       }
@@ -307,11 +360,11 @@ public:
     int s = slot(new_gen);
 
     // Derive new exchange key and compute its public key
-    uint8_t exc_priv[P256_PRIVATE_KEY_SIZE];
+    uint8_t exc_priv[EC_PRIVATE_KEY_SIZE];
     if (!derive_exchange_key(new_gen, exc_priv))
       return false;
 
-    bool ok = P256::compute_public_key(exc_priv, exc_pub[s]);
+    bool ok = EC::compute_public_key(exc_priv, exc_pub[s]);
     mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
 
     if (!ok) {
@@ -326,7 +379,7 @@ public:
       return false;
 
     ok = (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
-                        P256_PUBLIC_KEY_SIZE) == ESP_OK) &&
+                        EC_PUBLIC_KEY_SIZE) == ESP_OK) &&
          (nvs_set_u32(handle, "gen", (uint32_t)new_gen) == ESP_OK) &&
          (nvs_commit(handle) == ESP_OK);
     nvs_close(handle);

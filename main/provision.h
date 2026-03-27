@@ -103,7 +103,7 @@ bool provision_efuse_key5() {
   }
 
   // Check key-purpose lock (purpose cannot be changed)
-  if (esp_efuse_get_keypurpose_dis(EFUSE_BLK_KEY5)) {
+  if (esp_efuse_get_keypurpose_dis_write(EFUSE_BLK_KEY5)) {
     ESP_LOGI(TAG_PROVISION, "KEY_PURPOSE_5 locked");
   } else {
     ESP_LOGW(TAG_PROVISION, "KEY_PURPOSE_5 lock NOT set");

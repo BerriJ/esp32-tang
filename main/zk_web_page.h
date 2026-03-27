@@ -437,7 +437,7 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                 </div>
                 <div class="status-item">
                 <span class="status-label">Encryption</span>
-                <span class="status-value">P-256 + eFuse HMAC</span>
+                <span class="status-value">P-521 + eFuse HMAC</span>
                 </div>
                 <div class="status-item">
                     <span class="status-label">Authenticated At</span>
@@ -641,7 +641,7 @@ async function performSecureUnlock() {
         showStatus('Establishing ECIES tunnel...', 'info', true);
         
         // Step 2: Generate ephemeral client keypair using elliptic
-        const ec = new elliptic.ec('p256');
+        const ec = new elliptic.ec('p521');
         clientKey = ec.genKeyPair();
         
         // Export uncompressed public key (0x04 + X + Y)
@@ -858,7 +858,7 @@ async function buildEciesPayload(plaintextWordArray) {
     let clientKey = null;
 
     try {
-        const ec = new elliptic.ec('p256');
+        const ec = new elliptic.ec('p521');
         clientKey = ec.genKeyPair();
         const clientPubHex = clientKey.getPublic('hex');
 

@@ -8,16 +8,16 @@
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
-#include <mbedtls/sha256.h>
+#include <mbedtls/sha512.h>
 
 static const char *TAG_CRYPTO = "crypto";
 
 // --- Constants ---
 
-// P-256 uses 256 bits = 32 bytes per coordinate
-const int P256_PRIVATE_KEY_SIZE = 32; // Scalar value
-const int P256_PUBLIC_KEY_SIZE = 64;  // Uncompressed point (x + y)
-const int P256_COORDINATE_SIZE = 32;  // Single coordinate (x or y)
+// P-521 uses 521 bits = 66 bytes per coordinate (ceil(521/8))
+const int EC_PRIVATE_KEY_SIZE = 66;  // Scalar value
+const int EC_PUBLIC_KEY_SIZE = 132;  // Uncompressed point (x + y)
+const int EC_COORDINATE_SIZE = 66;   // Single coordinate (x or y)
 
 // --- RNG Management ---
 class RNG {
@@ -62,8 +62,8 @@ public:
 // Global RNG instance
 static RNG global_rng;
 
-// --- P-256 EC Operations ---
-class P256 {
+// --- P-521 EC Operations ---
+class EC {
 public:
   static bool generate_keypair(uint8_t *pub_key, uint8_t *priv_key) {
     int ret = global_rng.init();
@@ -80,7 +80,7 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
     if (ret != 0) {
       ESP_LOGE(TAG_CRYPTO, "ECP group load failed: -0x%04x", -ret);
     } else {
@@ -91,22 +91,22 @@ public:
       }
     }
     if (ret == 0) {
-      ret = mbedtls_mpi_write_binary(&d, priv_key, P256_COORDINATE_SIZE);
+      ret = mbedtls_mpi_write_binary(&d, priv_key, EC_COORDINATE_SIZE);
       if (ret != 0) {
         ESP_LOGE(TAG_CRYPTO, "Write private key failed: -0x%04x", -ret);
       }
     }
     if (ret == 0) {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key,
-                                     P256_COORDINATE_SIZE);
+                                     EC_COORDINATE_SIZE);
       if (ret != 0) {
         ESP_LOGE(TAG_CRYPTO, "Write pub key X failed: -0x%04x", -ret);
       }
     }
     if (ret == 0) {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y),
-                                     pub_key + P256_COORDINATE_SIZE,
-                                     P256_COORDINATE_SIZE);
+                                     pub_key + EC_COORDINATE_SIZE,
+                                     EC_COORDINATE_SIZE);
       if (ret != 0) {
         ESP_LOGE(TAG_CRYPTO, "Write pub key Y failed: -0x%04x", -ret);
       }
@@ -131,9 +131,9 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
     if (ret == 0) {
-      ret = mbedtls_mpi_read_binary(&d, priv_key, P256_COORDINATE_SIZE);
+      ret = mbedtls_mpi_read_binary(&d, priv_key, EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
       ret = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, mbedtls_ctr_drbg_random,
@@ -141,12 +141,12 @@ public:
     }
     if (ret == 0) {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub_key,
-                                     P256_COORDINATE_SIZE);
+                                     EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y),
-                                     pub_key + P256_COORDINATE_SIZE,
-                                     P256_COORDINATE_SIZE);
+                                     pub_key + EC_COORDINATE_SIZE,
+                                     EC_COORDINATE_SIZE);
     }
 
     mbedtls_ecp_group_free(&grp);
@@ -171,18 +171,18 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
     if (ret == 0) {
-      ret = mbedtls_mpi_read_binary(&d, priv_key, P256_COORDINATE_SIZE);
+      ret = mbedtls_mpi_read_binary(&d, priv_key, EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
       ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), peer_pub_key,
-                                    P256_COORDINATE_SIZE);
+                                    EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
       ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(Y),
-                                    peer_pub_key + P256_COORDINATE_SIZE,
-                                    P256_COORDINATE_SIZE);
+                                    peer_pub_key + EC_COORDINATE_SIZE,
+                                    EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
       ret = mbedtls_mpi_lset(&Q.MBEDTLS_PRIVATE(Z), 1);
@@ -196,12 +196,12 @@ public:
     }
     if (ret == 0) {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_point,
-                                     P256_COORDINATE_SIZE);
+                                     EC_COORDINATE_SIZE);
     }
     if (ret == 0 && full_point) {
       ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y),
-                                     shared_point + P256_COORDINATE_SIZE,
-                                     P256_COORDINATE_SIZE);
+                                     shared_point + EC_COORDINATE_SIZE,
+                                     EC_COORDINATE_SIZE);
     }
 
     mbedtls_ecp_group_free(&grp);
@@ -224,20 +224,20 @@ public:
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
     if (ret == 0) {
-      ret = mbedtls_mpi_read_binary(&d, priv_key, P256_COORDINATE_SIZE);
+      ret = mbedtls_mpi_read_binary(&d, priv_key, EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
       ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, hash_len,
                                mbedtls_ctr_drbg_random, global_rng.context());
     }
     if (ret == 0) {
-      ret = mbedtls_mpi_write_binary(&r, signature, P256_COORDINATE_SIZE);
+      ret = mbedtls_mpi_write_binary(&r, signature, EC_COORDINATE_SIZE);
     }
     if (ret == 0) {
-      ret = mbedtls_mpi_write_binary(&s, signature + P256_COORDINATE_SIZE,
-                                     P256_COORDINATE_SIZE);
+      ret = mbedtls_mpi_write_binary(&s, signature + EC_COORDINATE_SIZE,
+                                     EC_COORDINATE_SIZE);
     }
 
     mbedtls_ecp_group_free(&grp);

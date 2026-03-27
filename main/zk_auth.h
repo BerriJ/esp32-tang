@@ -36,7 +36,7 @@ private:
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
 
-  uint8_t device_public_key[65]; // Uncompressed: 0x04 + X(32) + Y(32)
+  uint8_t device_public_key[133]; // Uncompressed: 0x04 + X(66) + Y(66)
 
   bool initialized;
 
@@ -98,8 +98,8 @@ private:
       return NULL;
     }
 
-    uint8_t shared_secret_raw[32];
-    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 32);
+    uint8_t shared_secret_raw[66];
+    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 66);
     mbedtls_mpi_free(&shared_secret_mpi);
     if (ret != 0) {
       *error_json = strdup("{\"error\":\"Shared secret export failed\"}");
@@ -115,16 +115,16 @@ private:
 
     mbedtls_md_starts(&md_ctx);
     mbedtls_md_update(&md_ctx, (const uint8_t *)"encryption", 10);
-    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
+    mbedtls_md_update(&md_ctx, shared_secret_raw, sizeof(shared_secret_raw));
     mbedtls_md_finish(&md_ctx, enc_key);
 
     mbedtls_md_starts(&md_ctx);
     mbedtls_md_update(&md_ctx, (const uint8_t *)"authentication", 14);
-    mbedtls_md_update(&md_ctx, shared_secret_raw, 32);
+    mbedtls_md_update(&md_ctx, shared_secret_raw, sizeof(shared_secret_raw));
     mbedtls_md_finish(&md_ctx, mac_key);
     mbedtls_md_free(&md_ctx);
 
-    mbedtls_platform_zeroize(shared_secret_raw, 32);
+    mbedtls_platform_zeroize(shared_secret_raw, sizeof(shared_secret_raw));
 
     size_t blob_len = strlen(blob_hex) / 2;
     if (blob_len < 48 + 16) {
@@ -240,7 +240,7 @@ public:
       return false;
     }
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
     if (ret != 0) {
       printf("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
       return false;
@@ -258,7 +258,7 @@ public:
     ret = mbedtls_ecp_point_write_binary(
         &grp, &device_public_Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen,
         device_public_key, sizeof(device_public_key));
-    if (ret != 0 || olen != 65) {
+    if (ret != 0 || olen != 133) {
       printf("mbedtls_ecp_point_write_binary failed: -0x%04x\n", -ret);
       return false;
     }
@@ -267,7 +267,7 @@ public:
 
     printf("\n=== ZK Authentication Initialized ===\n");
     printf("Ephemeral Tunnel Key: ");
-    for (int i = 0; i < 65; i++)
+    for (int i = 0; i < 133; i++)
       printf("%02x", device_public_key[i]);
     printf("\n=====================================\n\n");
 
@@ -276,8 +276,8 @@ public:
 
   // Return ephemeral tunnel public key + MAC address for the browser
   char *get_identity_json() {
-    char pubkey_hex[131]; // 65 bytes * 2 + null
-    bin_to_hex(device_public_key, 65, pubkey_hex);
+    char pubkey_hex[267]; // 133 bytes * 2 + null
+    bin_to_hex(device_public_key, 133, pubkey_hex);
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
