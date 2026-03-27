@@ -10,7 +10,6 @@
 #include "esp_efuse_table.h"
 #include "esp_hmac.h"
 #include "esp_random.h"
-#include "esp_rom_sys.h"
 #include "esp_tee.h"
 #include "secure_service_num.h"
 
@@ -35,6 +34,16 @@ static uint32_t num_exchange_keys = 0;
 /* ------------------------------------------------------------------ */
 /* Internal helpers                                                    */
 /* ------------------------------------------------------------------ */
+
+/**
+ * RNG callback for mbedtls ECP operations (side-channel blinding).
+ * Required since mbedtls 3.x — software ecp_mul_comb rejects f_rng=NULL.
+ */
+static int tee_rng(void *ctx, unsigned char *buf, size_t len) {
+  (void)ctx;
+  esp_fill_random(buf, len);
+  return 0;
+}
 
 /**
  * Compute HMAC-SHA256(key, msg) using raw SHA-256 primitives.
@@ -134,7 +143,7 @@ static int compute_public_key(const uint8_t *priv, uint8_t *pub) {
   if (ret == 0)
     ret = mbedtls_mpi_read_binary(&d, priv, EC_PRIV_SIZE);
   if (ret == 0)
-    ret = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, NULL, NULL);
+    ret = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, tee_rng, NULL);
   if (ret == 0)
     ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub, EC_COORD_SIZE);
   if (ret == 0)
@@ -261,7 +270,7 @@ esp_err_t _ss_tang_tee_sign(const uint8_t *hash, uint32_t hash_len,
   mbedtls_platform_zeroize(priv, sizeof(priv));
 
   if (ret == 0)
-    ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, hash_len, NULL, NULL);
+    ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, hash_len, tee_rng, NULL);
   if (ret == 0)
     ret = mbedtls_mpi_write_binary(&r, signature_out, EC_COORD_SIZE);
   if (ret == 0)
@@ -318,7 +327,7 @@ esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
   if (ret == 0)
     ret = mbedtls_ecp_check_pubkey(&grp, &Q);
   if (ret == 0)
-    ret = mbedtls_ecp_mul(&grp, &Q, &d, &Q, NULL, NULL);
+    ret = mbedtls_ecp_mul(&grp, &Q, &d, &Q, tee_rng, NULL);
   if (ret == 0)
     ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_point_out,
                                    EC_COORD_SIZE);

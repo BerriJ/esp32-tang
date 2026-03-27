@@ -474,6 +474,82 @@ public:
         "{\"success\":true,\"message\":\"Password changed and keys rotated\"}");
   }
 
+  // Process key-rotation request.
+  // Expects ECIES blob containing password_hash (32 bytes).
+  // Verifies the password against stored keys before rotating.
+  char *process_rotate(const char *json_payload, bool *success_out) {
+    *success_out = false;
+
+    if (!initialized)
+      return strdup("{\"error\":\"Not initialized\"}");
+    if (!unlocked)
+      return strdup("{\"error\":\"Device not unlocked\"}");
+
+    cJSON *doc = cJSON_Parse(json_payload);
+    if (!doc)
+      return strdup("{\"error\":\"Invalid JSON\"}");
+
+    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
+    cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
+
+    const char *client_pub_hex =
+        cJSON_IsString(client_pub_item) ? client_pub_item->valuestring : NULL;
+    const char *encrypted_blob_hex = cJSON_IsString(encrypted_blob_item)
+                                         ? encrypted_blob_item->valuestring
+                                         : NULL;
+
+    if (!client_pub_hex || !encrypted_blob_hex) {
+      cJSON_Delete(doc);
+      return strdup("{\"error\":\"Missing required fields\"}");
+    }
+
+    printf("\n=== Processing Key Rotation ===\n");
+
+    size_t plaintext_len = 0;
+    char *error_msg = NULL;
+    uint8_t *decrypted = decrypt_ecies_payload(
+        client_pub_hex, encrypted_blob_hex, &plaintext_len, &error_msg);
+    cJSON_Delete(doc);
+
+    if (!decrypted)
+      return error_msg;
+
+    if (plaintext_len != 32) {
+      mbedtls_platform_zeroize(decrypted, plaintext_len);
+      free(decrypted);
+      return strdup("{\"error\":\"Invalid payload size\"}");
+    }
+
+    // Re-derive keys via TEE and verify against stored public keys
+    bool password_ok = false;
+    if (keystore.derive_and_verify(decrypted)) {
+      password_ok = keystore.verify_public_keys();
+    }
+
+    mbedtls_platform_zeroize(decrypted, 32);
+    free(decrypted);
+
+    if (!password_ok) {
+      printf("Key rotation password verification FAILED\n");
+      return strdup("{\"success\":false,\"error\":\"Invalid password\"}");
+    }
+
+    if (!keystore.rotate()) {
+      printf("Key rotation FAILED\n");
+      return strdup("{\"success\":false,\"error\":\"Rotation failed\"}");
+    }
+
+    printf("Key rotation successful — gen %u\n", keystore.gen);
+    *success_out = true;
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "success", true);
+    cJSON_AddNumberToObject(resp, "gen", keystore.gen);
+    char *response_str = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    return response_str;
+  }
+
   bool is_unlocked() const { return unlocked; }
 
   void lock() {

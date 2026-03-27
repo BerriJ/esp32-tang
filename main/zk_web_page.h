@@ -451,6 +451,9 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             <button class="btn" onclick="showChangePasswordPage()" style="margin-bottom: 10px;">
                 Change Password
             </button>
+            <button class="btn" onclick="showRotatePage()" style="margin-bottom: 10px;">
+                Rotate Keys
+            </button>
             <button class="btn btn-secondary" onclick="lockDevice()">
                 Lock Device
             </button>
@@ -481,6 +484,30 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             <div id="changeStatus"></div>
             
             <button class="btn btn-secondary" onclick="backToStatus()" style="margin-top: 10px;">
+                Back
+            </button>
+        </div>
+
+        <div id="rotatePage" class="status-page">
+            <h1>Rotate Keys</h1>
+            <p class="subtitle">Advance to next exchange key generation</p>
+            
+            <div class="info-box">
+                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 2px;"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Key Rotation:</strong> This will generate a new exchange key and drop the oldest one. Existing clients using recent keys will continue to work.
+            </div>
+            
+            <div class="form-group">
+                <label for="rotatePassword">Password</label>
+                <input type="password" id="rotatePassword" placeholder="Enter your password" autocomplete="off">
+            </div>
+            
+            <button class="btn" onclick="performRotate()" id="rotateBtn">
+                Rotate Keys
+            </button>
+            
+            <div id="rotateStatus"></div>
+            
+            <button class="btn btn-secondary" onclick="backToStatusFromRotate()" style="margin-top: 10px;">
                 Back
             </button>
         </div>
@@ -952,6 +979,89 @@ function backToStatus() {
     document.getElementById('statusPage').classList.add('active');
 }
 
+function showRotatePage() {
+    document.getElementById('statusPage').classList.remove('active');
+    document.getElementById('rotatePage').classList.add('active');
+    loadDeviceIdentity();
+}
+
+function backToStatusFromRotate() {
+    document.getElementById('rotatePage').classList.remove('active');
+    document.getElementById('rotatePassword').value = '';
+    document.getElementById('rotateStatus').style.display = 'none';
+    document.getElementById('statusPage').classList.add('active');
+}
+
+function showRotateStatus(message, type, showLoader = false) {
+    const status = document.getElementById('rotateStatus');
+    status.className = 'status-' + type;
+    status.style.display = 'block';
+    if (showLoader) {
+        status.innerHTML = '<div class="loader"></div>' + message;
+    } else {
+        status.innerHTML = message;
+    }
+}
+
+async function performRotate() {
+    const pwInput = document.getElementById('rotatePassword');
+    const pw = pwInput.value;
+
+    if (!pw) {
+        showRotateStatus('Please enter your password', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('rotateBtn');
+    btn.disabled = true;
+    showRotateStatus('Initializing...', 'info', true);
+
+    let keyHash = null;
+
+    try {
+        if (!deviceIdentity) {
+            const loaded = await loadDeviceIdentity();
+            if (!loaded) { btn.disabled = false; return; }
+        }
+
+        showRotateStatus('Deriving key...', 'info', true);
+
+        const macBytes = hexToBytes(deviceIdentity.macAddress);
+        const salt = byteArrayToWordArray(macBytes);
+
+        keyHash = CryptoJS.PBKDF2(pw, salt, {
+            keySize: 256/32, iterations: 10000, hasher: CryptoJS.algo.SHA256
+        });
+        pwInput.value = '';
+
+        showRotateStatus('Encrypting...', 'info', true);
+        const { clientPubHex, blobHex } = await buildEciesPayload(keyHash);
+
+        showRotateStatus('Sending request...', 'info', true);
+        const response = await fetch('/api/rotate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clientPub: clientPubHex, blob: blobHex })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            showRotateStatus('Keys rotated successfully! New generation: ' + result.gen, 'success');
+            setTimeout(() => backToStatusFromRotate(), 2000);
+        } else {
+            showRotateStatus('Failed: ' + (result.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        showRotateStatus('Error: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        pwInput.value = '';
+        if (keyHash) secureWipeWordArray(keyHash);
+    }
+}
+
 async function performPasswordChange() {
     const currentPwInput = document.getElementById('currentPassword');
     const newPwInput = document.getElementById('newPassword');
@@ -1069,6 +1179,12 @@ document.getElementById('currentPassword').addEventListener('keypress', (e) => {
 document.getElementById('newPassword').addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         performPasswordChange();
+    }
+});
+
+document.getElementById('rotatePassword').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        performRotate();
     }
 });
 
