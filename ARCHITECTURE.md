@@ -50,15 +50,16 @@ On each power-on the device executes these steps (in `setup()`):
 2. **eFuse KEY5 provisioning** — if KEY5 is unused, the TEE generates a random
    256-bit HMAC key, burns it into eFuse block KEY5 with purpose `HMAC_UP`, and
    sets read/write protections. This is a **one-time, irreversible** operation.
-3. **Load signing public key** from NVS (if previously stored). This lets the
-   device advertise its JWK identity before activation.
+3. **Load signing public key** from NVS (if previously stored).
 4. **Load exchange public keys** and generation counter from NVS.
 5. **Initialize ZKAuth** — generate a fresh ephemeral ECDH tunnel keypair
    (P-256) for the ECIES channel. This keypair is **per-boot** and not persisted.
 6. **Start WiFi + HTTP server** — register all route handlers.
 
-After boot the server advertises keys via `/adv` but will refuse `/rec` requests
-until the device is unlocked with the correct password.
+After boot the server will refuse both `/adv` and `/rec` requests until the
+device is unlocked with the correct password. `/adv` requires activation because
+the response is a signed JWS (ES256), and the signing private key only exists in
+TEE SRAM after the password-based master key derivation.
 
 ---
 
