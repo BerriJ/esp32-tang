@@ -1,7 +1,6 @@
 #ifndef TANG_HANDLERS_H
 #define TANG_HANDLERS_H
 
-#include "crypto.h"
 #include "encoding.h"
 #include "tang_storage.h"
 #include "tang_tee_service.h"

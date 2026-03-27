@@ -23,7 +23,6 @@ TEE (M-mode) memory and is never exposed to the application (REE / U-mode).
 main/
   main.cpp             Entry point (setup + loop)
   TangServer.h         WiFi, HTTP server, boot sequence
-  crypto.h             P-256 EC primitives (mbedTLS wrappers, used in REE)
   encoding.h           Base64url encode/decode helpers
   tang_storage.h       TangKeyStore — public key cache, NVS persistence, rotation
   tang_handlers.h      HTTP handlers for /adv and /rec (Tang protocol)

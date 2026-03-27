@@ -1,10 +1,12 @@
 #ifndef TANG_STORAGE_H
 #define TANG_STORAGE_H
 
-#include "crypto.h"
 #include "tang_tee_service.h"
 #include <cstring>
 #include <esp_log.h>
+extern "C" {
+#include <mbedtls/constant_time.h>
+}
 #include <mbedtls/platform_util.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -13,6 +15,10 @@
 static const char *TAG_STORAGE = "tang_storage";
 
 const int NUM_EXCHANGE_KEYS = CONFIG_NUM_EXCHANGE_KEYS;
+
+const int EC_PRIVATE_KEY_SIZE = 32; // Scalar value
+const int EC_PUBLIC_KEY_SIZE = 64;  // Uncompressed point (x + y)
+const int EC_COORDINATE_SIZE = 32;  // Single coordinate (x or y)
 
 class TangKeyStore {
 public:
@@ -145,30 +151,31 @@ public:
     if (err != ESP_OK)
       return false;
 
-    // Verify signing key
+    // Verify signing key (constant-time comparison)
     uint8_t stored[EC_PUBLIC_KEY_SIZE];
     size_t len = EC_PUBLIC_KEY_SIZE;
+    bool mismatch = false;
     if (nvs_get_blob(handle, "sig_pub", stored, &len) != ESP_OK ||
-        memcmp(sig_pub, stored, EC_PUBLIC_KEY_SIZE) != 0) {
+        mbedtls_ct_memcmp(sig_pub, stored, EC_PUBLIC_KEY_SIZE) != 0) {
+      mismatch = true;
+    }
+
+    // Verify all exchange key slots (constant-time comparison)
+    for (int s = 0; s < NUM_EXCHANGE_KEYS && !mismatch; s++) {
+      len = EC_PUBLIC_KEY_SIZE;
+      if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
+          mbedtls_ct_memcmp(exc_pub[s], stored, EC_PUBLIC_KEY_SIZE) != 0) {
+        mismatch = true;
+      }
+    }
+
+    if (mismatch) {
       nvs_close(handle);
       ESP_LOGW(TAG_STORAGE,
-               "Signing key mismatch — wrong password or wrong device");
+               "Public key mismatch — wrong password or wrong device");
       sig_loaded = false;
       exc_pub_loaded = false;
       return false;
-    }
-
-    // Verify all exchange key slots
-    for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      len = EC_PUBLIC_KEY_SIZE;
-      if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
-          memcmp(exc_pub[s], stored, EC_PUBLIC_KEY_SIZE) != 0) {
-        nvs_close(handle);
-        ESP_LOGW(TAG_STORAGE, "Exchange key slot %d mismatch", s);
-        sig_loaded = false;
-        exc_pub_loaded = false;
-        return false;
-      }
     }
 
     nvs_close(handle);

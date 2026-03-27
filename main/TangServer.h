@@ -16,7 +16,6 @@
 static const char *TAG = "TangServer";
 
 // Core components (order matters — later headers reference earlier ones)
-#include "crypto.h"
 #include "encoding.h"
 #include "provision.h"
 #include "provision_handlers.h"
