@@ -99,6 +99,7 @@ httpd_handle_t setup_http_server() {
   config.lru_purge_enable = true;
   config.stack_size = 8192;
   config.max_uri_handlers = 16;
+  config.uri_match_fn = httpd_uri_match_wildcard;
 
   httpd_handle_t server = NULL;
 
@@ -118,7 +119,7 @@ httpd_handle_t setup_http_server() {
                                  .user_ctx = NULL};
     httpd_register_uri_handler(server, &adv_uri_slash);
 
-    httpd_uri_t rec_uri = {.uri = "/rec",
+    httpd_uri_t rec_uri = {.uri = "/rec/*",
                            .method = HTTP_POST,
                            .handler = handle_rec,
                            .user_ctx = NULL};

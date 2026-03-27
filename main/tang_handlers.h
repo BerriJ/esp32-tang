@@ -241,19 +241,6 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
   return ESP_OK;
 }
 
-// POST /rec - Recovery endpoint using newest generation
-static esp_err_t handle_rec(httpd_req_t *req) {
-  return perform_rec(req, keystore.gen);
-}
-
-// GET /reboot - Reboot device
-static esp_err_t handle_reboot(httpd_req_t *req) {
-  httpd_resp_sendstr(req, "Rebooting...");
-  vTaskDelay(pdMS_TO_TICKS(1000));
-  esp_restart();
-  return ESP_OK;
-}
-
 // Compute JWK Thumbprint (RFC 7638) for the exchange key in a given slot.
 // For EC P-256: SHA-256({"crv":"P-256","kty":"EC","x":"...","y":"..."})
 // Writes base64url-encoded thumbprint to out_buf (must be >= 44 bytes).
@@ -284,27 +271,36 @@ static bool compute_exchange_key_thumbprint(int s, char *out_buf,
   return b64url_encode_buf(hash, 32, out_buf, out_buf_size);
 }
 
-// 404 handler - Route /rec/{kid} to perform_rec after matching kid
-// against all active exchange key generations.
-static esp_err_t handle_not_found(httpd_req_t *req, httpd_err_code_t err) {
-  if (req->method == HTTP_POST && strncmp(req->uri, "/rec/", 5) == 0) {
-    const char *request_kid = req->uri + 5;
-
-    // Try all active generations: gen, gen-1, ... gen-(NUM_EXCHANGE_KEYS-1)
-    for (int offset = 0; offset < NUM_EXCHANGE_KEYS; offset++) {
-      unsigned int g = keystore.gen - offset;
-      int s = TangKeyStore::slot(g);
-
-      char kid[64] = {0};
-      if (compute_exchange_key_thumbprint(s, kid, sizeof(kid)) &&
-          strcmp(request_kid, kid) == 0) {
-        return perform_rec(req, g);
-      }
-    }
-
-    ESP_LOGW(TAG_HANDLERS, "Key ID mismatch for %s", req->uri);
+// POST /rec - Recovery endpoint using newest generation
+static esp_err_t handle_rec(httpd_req_t *req) {
+  const char *kid_start = req->uri + 5; // skip "/rec/"
+  if (*kid_start == '\0') {
+    return perform_rec(req, keystore.gen);
   }
+  for (int offset = 0; offset < NUM_EXCHANGE_KEYS; offset++) {
+    unsigned int g = keystore.gen - offset;
+    int s = TangKeyStore::slot(g);
+    char kid[64] = {0};
+    if (compute_exchange_key_thumbprint(s, kid, sizeof(kid)) &&
+        strcmp(kid_start, kid) == 0) {
+      return perform_rec(req, g);
+    }
+  }
+  ESP_LOGW(TAG_HANDLERS, "Key ID mismatch for %s", req->uri);
+  httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
+  return ESP_FAIL;
+}
 
+// GET /reboot - Reboot device
+static esp_err_t handle_reboot(httpd_req_t *req) {
+  httpd_resp_sendstr(req, "Rebooting...");
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  esp_restart();
+  return ESP_OK;
+}
+
+// 404 handler
+static esp_err_t handle_not_found(httpd_req_t *req, httpd_err_code_t err) {
   httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
   return ESP_FAIL;
 }
