@@ -88,26 +88,29 @@ bool provision_efuse_key5() {
   }
   ESP_LOGI(TAG_PROVISION, "KEY_PURPOSE_5 set to HMAC_UP");
 
-  // Check read protection (software cannot read the key back)
-  if (esp_efuse_get_key_dis_read(EFUSE_BLK_KEY5)) {
-    ESP_LOGI(TAG_PROVISION, "BLOCK_KEY5 read-protected (locked)");
-  } else {
-    ESP_LOGW(TAG_PROVISION, "BLOCK_KEY5 read protection NOT set");
-  }
+  // Verify all protections are set (esp_efuse_write_key sets them for HMAC_UP,
+  // but we check defensively to ensure the key is truly locked down).
 
-  // Check write protection (key cannot be overwritten)
-  if (esp_efuse_get_key_dis_write(EFUSE_BLK_KEY5)) {
-    ESP_LOGI(TAG_PROVISION, "BLOCK_KEY5 write-protected (locked)");
-  } else {
-    ESP_LOGW(TAG_PROVISION, "BLOCK_KEY5 write protection NOT set");
+  // Read protection — software cannot read the key back; only HMAC peripheral
+  if (!esp_efuse_get_key_dis_read(EFUSE_BLK_KEY5)) {
+    ESP_LOGE(TAG_PROVISION, "BLOCK_KEY5 read protection NOT set — aborting");
+    return false;
   }
+  ESP_LOGI(TAG_PROVISION, "BLOCK_KEY5 read-protected (locked)");
 
-  // Check key-purpose lock (purpose cannot be changed)
-  if (esp_efuse_get_keypurpose_dis_write(EFUSE_BLK_KEY5)) {
-    ESP_LOGI(TAG_PROVISION, "KEY_PURPOSE_5 locked");
-  } else {
-    ESP_LOGW(TAG_PROVISION, "KEY_PURPOSE_5 lock NOT set");
+  // Write protection — key cannot be overwritten
+  if (!esp_efuse_get_key_dis_write(EFUSE_BLK_KEY5)) {
+    ESP_LOGE(TAG_PROVISION, "BLOCK_KEY5 write protection NOT set — aborting");
+    return false;
   }
+  ESP_LOGI(TAG_PROVISION, "BLOCK_KEY5 write-protected (locked)");
+
+  // Key-purpose lock — purpose cannot be changed
+  if (!esp_efuse_get_keypurpose_dis_write(EFUSE_BLK_KEY5)) {
+    ESP_LOGE(TAG_PROVISION, "KEY_PURPOSE_5 lock NOT set — aborting");
+    return false;
+  }
+  ESP_LOGI(TAG_PROVISION, "KEY_PURPOSE_5 locked");
 
   ESP_LOGI(TAG_PROVISION, "EFUSE KEY5 provisioned successfully!");
   return true;
