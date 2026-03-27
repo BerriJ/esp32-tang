@@ -155,15 +155,19 @@ void setup() {
   ESP_LOGI(TAG, "NVS initialized");
 
   // 2. Provision eFuse KEY5 if not already burned
-  if (!is_efuse_key5_used()) {
+  if (is_efuse_key5_hmac_up()) {
+    ESP_LOGI(TAG, "eFuse KEY5 already provisioned with HMAC_UP");
+  } else if (is_efuse_key5_free()) {
     ESP_LOGI(TAG, "First boot — provisioning eFuse HMAC key...");
     if (provision_efuse_key5()) {
       ESP_LOGI(TAG, "eFuse KEY5 provisioned");
     } else {
-      ESP_LOGW(TAG, "eFuse KEY5 provisioning failed");
+      ESP_LOGE(TAG, "eFuse KEY5 provisioning failed");
     }
   } else {
-    ESP_LOGI(TAG, "eFuse KEY5 already provisioned");
+    ESP_LOGE(TAG,
+             "eFuse KEY5 has wrong purpose (expected HMAC_UP) — "
+             "HMAC key derivation will not work");
   }
 
   // 3. Load signing public key if available (for reference before activation)

@@ -14,9 +14,15 @@ static const char *TAG_PROVISION_HANDLERS = "provision_handlers";
 static esp_err_t handle_provision_status(httpd_req_t *req) {
   cJSON *response = cJSON_CreateObject();
 
-  bool key5_used = is_efuse_key5_used();
+  bool hmac_up = is_efuse_key5_hmac_up();
+  bool key5_free = is_efuse_key5_free();
 
-  cJSON_AddBoolToObject(response, "key5_provisioned", key5_used);
+  cJSON_AddBoolToObject(response, "key5_provisioned", hmac_up);
+  cJSON_AddBoolToObject(response, "key5_free", key5_free);
+  if (!hmac_up && !key5_free) {
+    cJSON_AddStringToObject(response, "error",
+                            "SLOT 5 occupied with wrong purpose");
+  }
 
   char *json_str = cJSON_PrintUnformatted(response);
   cJSON_Delete(response);
@@ -39,9 +45,11 @@ static esp_err_t handle_provision_api(httpd_req_t *req) {
   bool success = false;
   const char *message = "Unknown error";
 
-  if (is_efuse_key5_used()) {
-    message = "EFUSE KEY5 is already provisioned";
+  if (is_efuse_key5_hmac_up()) {
+    message = "EFUSE KEY5 is already provisioned with HMAC_UP";
     success = true;
+  } else if (!is_efuse_key5_free()) {
+    message = "EFUSE KEY5 has wrong purpose — cannot re-provision";
   } else {
     ESP_LOGI(TAG_PROVISION_HANDLERS, "Provisioning EFUSE KEY5...");
     if (provision_efuse_key5()) {

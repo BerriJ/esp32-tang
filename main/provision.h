@@ -11,20 +11,40 @@
 static const char *TAG_PROVISION = "provision";
 
 /**
- * Check if ESP32-C6 efuse BLOCK_KEY5 is already used
+ * Read the purpose of EFUSE BLOCK_KEY5.
+ * Returns ESP_EFUSE_KEY_PURPOSE_MAX on read failure.
  */
-bool is_efuse_key5_used() {
+esp_efuse_purpose_t get_efuse_key5_purpose() {
   esp_efuse_purpose_t purpose;
   esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_KEY_PURPOSE_5, &purpose,
                                             sizeof(purpose) * 8);
   if (err != ESP_OK) {
     ESP_LOGE(TAG_PROVISION, "Failed to read KEY_PURPOSE_5: %s",
              esp_err_to_name(err));
-    return false;
+    return ESP_EFUSE_KEY_PURPOSE_MAX;
   }
+  return purpose;
+}
 
+/**
+ * Check if EFUSE BLOCK_KEY5 is unused (available for provisioning).
+ */
+bool is_efuse_key5_free() {
+  esp_efuse_purpose_t purpose = get_efuse_key5_purpose();
+  if (purpose == ESP_EFUSE_KEY_PURPOSE_MAX)
+    return false; // read failed — treat as not free
   ESP_LOGI(TAG_PROVISION, "EFUSE KEY_PURPOSE_5: %d (0=NONE/unused)", purpose);
-  return (purpose != ESP_EFUSE_KEY_PURPOSE_USER);
+  return (purpose == ESP_EFUSE_KEY_PURPOSE_USER);
+}
+
+/**
+ * Check if EFUSE BLOCK_KEY5 is correctly provisioned for HMAC upstream.
+ */
+bool is_efuse_key5_hmac_up() {
+  esp_efuse_purpose_t purpose = get_efuse_key5_purpose();
+  if (purpose == ESP_EFUSE_KEY_PURPOSE_MAX)
+    return false;
+  return (purpose == ESP_EFUSE_KEY_PURPOSE_HMAC_UP);
 }
 
 /**
@@ -35,8 +55,10 @@ bool is_efuse_key5_used() {
 bool provision_efuse_key5() {
   ESP_LOGI(TAG_PROVISION, "=== Starting EFUSE KEY5 Provisioning ===");
 
-  if (is_efuse_key5_used()) {
-    ESP_LOGW(TAG_PROVISION, "EFUSE KEY5 is already programmed");
+  if (!is_efuse_key5_free()) {
+    esp_efuse_purpose_t cur = get_efuse_key5_purpose();
+    ESP_LOGW(TAG_PROVISION,
+             "EFUSE KEY5 is already programmed (purpose=%d)", (int)cur);
     return false;
   }
 
@@ -56,15 +78,39 @@ bool provision_efuse_key5() {
     return false;
   }
 
-  ESP_LOGI(TAG_PROVISION, "EFUSE KEY5 provisioned successfully!");
+  ESP_LOGI(TAG_PROVISION, "EFUSE KEY5 key data written");
 
-  if (is_efuse_key5_used()) {
-    ESP_LOGI(TAG_PROVISION, "Verification: KEY5 is now marked as used");
-    return true;
-  } else {
-    ESP_LOGE(TAG_PROVISION, "Verification failed: KEY5 still appears unused");
+  // Verify purpose is HMAC_UP
+  if (!is_efuse_key5_hmac_up()) {
+    ESP_LOGE(TAG_PROVISION,
+             "Verification failed: KEY_PURPOSE_5 is not HMAC_UP");
     return false;
   }
+  ESP_LOGI(TAG_PROVISION, "KEY_PURPOSE_5 set to HMAC_UP");
+
+  // Check read protection (software cannot read the key back)
+  if (esp_efuse_get_key_dis_read(EFUSE_BLK_KEY5)) {
+    ESP_LOGI(TAG_PROVISION, "BLOCK_KEY5 read-protected (locked)");
+  } else {
+    ESP_LOGW(TAG_PROVISION, "BLOCK_KEY5 read protection NOT set");
+  }
+
+  // Check write protection (key cannot be overwritten)
+  if (esp_efuse_get_key_dis_write(EFUSE_BLK_KEY5)) {
+    ESP_LOGI(TAG_PROVISION, "BLOCK_KEY5 write-protected (locked)");
+  } else {
+    ESP_LOGW(TAG_PROVISION, "BLOCK_KEY5 write protection NOT set");
+  }
+
+  // Check key-purpose lock (purpose cannot be changed)
+  if (esp_efuse_get_keypurpose_dis(EFUSE_BLK_KEY5)) {
+    ESP_LOGI(TAG_PROVISION, "KEY_PURPOSE_5 locked");
+  } else {
+    ESP_LOGW(TAG_PROVISION, "KEY_PURPOSE_5 lock NOT set");
+  }
+
+  ESP_LOGI(TAG_PROVISION, "EFUSE KEY5 provisioned successfully!");
+  return true;
 }
 
 /**
