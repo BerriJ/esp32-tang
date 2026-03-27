@@ -7,6 +7,10 @@
       url = "github:mirrexagon/nixpkgs-esp-dev";
     };
     nixpkgs.follows = "nixpkgs-esp-dev/nixpkgs";
+    idf-extra-components = {
+      url = "github:espressif/idf-extra-components";
+      flake = false;
+    };
   };
 
   outputs =
@@ -15,6 +19,7 @@
       nixpkgs,
       flake-utils,
       nixpkgs-esp-dev,
+      idf-extra-components,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -110,6 +115,14 @@
             export IDF_TOOLS_PATH="$HOME/.espressif"
             export CCACHE_DIR="$HOME/.ccache"
 
+            # Provide real json_generator from Nix (needed for TEE attestation)
+            _JG_NIX="${idf-extra-components}/json_generator"
+            _JG_LOCAL="$PWD/components/json_generator"
+            if [ -L "$_JG_LOCAL" ] || [ ! -e "$_JG_LOCAL/src" ]; then
+              rm -rf "$_JG_LOCAL"
+              ln -sf "$_JG_NIX" "$_JG_LOCAL"
+            fi
+
             # Create necessary directories
             mkdir -p "$IDF_TOOLS_PATH"
             mkdir -p "$CCACHE_DIR"
@@ -149,6 +162,10 @@
           IDF_TOOLS_PATH = "$HOME/.espressif";
           CCACHE_DIR = "$HOME/.ccache";
 
+          # Disable IDF component manager — the TEE subproject's idf_component.yml
+          # lives in the read-only Nix store. We provide json_generator via Nix instead.
+          IDF_COMPONENT_MANAGER = "0";
+
           # Prevent Python from creating __pycache__ directories
           PYTHONDONTWRITEBYTECODE = "1";
 
@@ -177,7 +194,18 @@
             export IDF_TOOLS_PATH="$HOME/.espressif"
             export CCACHE_DIR="$HOME/.ccache"
             mkdir -p "$CCACHE_DIR"
+
+            # Provide real json_generator from Nix (needed for TEE attestation)
+            _JG_NIX="${idf-extra-components}/json_generator"
+            _JG_LOCAL="$PWD/components/json_generator"
+            if [ -L "$_JG_LOCAL" ] || [ ! -e "$_JG_LOCAL/src" ]; then
+              rm -rf "$_JG_LOCAL"
+              ln -sf "$_JG_NIX" "$_JG_LOCAL"
+            fi
           '';
+
+          # Disable IDF component manager for Nix compatibility
+          IDF_COMPONENT_MANAGER = "0";
 
           extraDevPaths = [
             "/dev/ttyUSB*"

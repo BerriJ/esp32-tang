@@ -8,16 +8,16 @@
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
-#include <mbedtls/sha512.h>
+#include <mbedtls/sha256.h>
 
 static const char *TAG_CRYPTO = "crypto";
 
 // --- Constants ---
 
-// P-521 uses 521 bits = 66 bytes per coordinate (ceil(521/8))
-const int EC_PRIVATE_KEY_SIZE = 66;  // Scalar value
-const int EC_PUBLIC_KEY_SIZE = 132;  // Uncompressed point (x + y)
-const int EC_COORDINATE_SIZE = 66;   // Single coordinate (x or y)
+// P-256 uses 256 bits = 32 bytes per coordinate
+const int EC_PRIVATE_KEY_SIZE = 32; // Scalar value
+const int EC_PUBLIC_KEY_SIZE = 64;  // Uncompressed point (x + y)
+const int EC_COORDINATE_SIZE = 32;  // Single coordinate (x or y)
 
 // --- RNG Management ---
 class RNG {
@@ -62,7 +62,7 @@ public:
 // Global RNG instance
 static RNG global_rng;
 
-// --- P-521 EC Operations ---
+// --- P-256 EC Operations ---
 class EC {
 public:
   static bool generate_keypair(uint8_t *pub_key, uint8_t *priv_key) {
@@ -80,7 +80,7 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret != 0) {
       ESP_LOGE(TAG_CRYPTO, "ECP group load failed: -0x%04x", -ret);
     } else {
@@ -131,7 +131,7 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret == 0) {
       ret = mbedtls_mpi_read_binary(&d, priv_key, EC_COORDINATE_SIZE);
     }
@@ -171,7 +171,7 @@ public:
     mbedtls_ecp_point_init(&Q);
     mbedtls_mpi_init(&d);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret == 0) {
       ret = mbedtls_mpi_read_binary(&d, priv_key, EC_COORDINATE_SIZE);
     }
@@ -224,7 +224,7 @@ public:
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
 
-    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret == 0) {
       ret = mbedtls_mpi_read_binary(&d, priv_key, EC_COORDINATE_SIZE);
     }

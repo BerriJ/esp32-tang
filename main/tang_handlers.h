@@ -4,12 +4,11 @@
 #include "crypto.h"
 #include "encoding.h"
 #include "tang_storage.h"
+#include "tang_tee_service.h"
 #include <cJSON.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
-#include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
-#include <mbedtls/sha512.h>
 #include <string.h>
 
 static const char *TAG_HANDLERS = "tang_handlers";
@@ -21,7 +20,7 @@ extern bool unlocked;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
 // Advertises only the newest exchange key (gen, at slot gen%NUM_EXCHANGE_KEYS).
-// Requires activation since signing key is derived on-demand.
+// Requires activation since signing is done via TEE.
 static esp_err_t handle_adv(httpd_req_t *req) {
   if (!keystore.sig_loaded || !keystore.exc_pub_loaded || !keystore.activated) {
     httpd_resp_set_status(req, "503 Service Unavailable");
@@ -31,9 +30,9 @@ static esp_err_t handle_adv(httpd_req_t *req) {
 
   int adv_slot = TangKeyStore::slot(keystore.gen);
 
-  // P-521 coordinates are 66 bytes → base64url ≈ 88 chars
-  char sig_x_b64[96] = {0}, sig_y_b64[96] = {0};
-  char rec_x_b64[96] = {0}, rec_y_b64[96] = {0};
+  // P-256 coordinates are 32 bytes -> base64url ~ 44 chars
+  char sig_x_b64[48] = {0}, sig_y_b64[48] = {0};
+  char rec_x_b64[48] = {0}, rec_y_b64[48] = {0};
 
   b64url_encode_buf(&keystore.sig_pub[0], EC_COORDINATE_SIZE, sig_x_b64,
                     sizeof(sig_x_b64));
@@ -51,8 +50,8 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   // Signing/verification key
   cJSON *sig_key = cJSON_CreateObject();
   cJSON_AddStringToObject(sig_key, "kty", "EC");
-  cJSON_AddStringToObject(sig_key, "alg", "ES512");
-  cJSON_AddStringToObject(sig_key, "crv", "P-521");
+  cJSON_AddStringToObject(sig_key, "alg", "ES256");
+  cJSON_AddStringToObject(sig_key, "crv", "P-256");
   cJSON_AddStringToObject(sig_key, "x", sig_x_b64);
   cJSON_AddStringToObject(sig_key, "y", sig_y_b64);
   cJSON *sig_key_ops = cJSON_CreateArray();
@@ -64,7 +63,7 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   cJSON *rec_key = cJSON_CreateObject();
   cJSON_AddStringToObject(rec_key, "alg", "ECMR");
   cJSON_AddStringToObject(rec_key, "kty", "EC");
-  cJSON_AddStringToObject(rec_key, "crv", "P-521");
+  cJSON_AddStringToObject(rec_key, "crv", "P-256");
   cJSON_AddStringToObject(rec_key, "x", rec_x_b64);
   cJSON_AddStringToObject(rec_key, "y", rec_y_b64);
   cJSON *rec_key_ops = cJSON_CreateArray();
@@ -86,7 +85,7 @@ static esp_err_t handle_adv(httpd_req_t *req) {
 
   // Create protected header
   cJSON *protected_root = cJSON_CreateObject();
-  cJSON_AddStringToObject(protected_root, "alg", "ES512");
+  cJSON_AddStringToObject(protected_root, "alg", "ES256");
   cJSON_AddStringToObject(protected_root, "cty", "jwk-set+json");
 
   char *protected_json = cJSON_PrintUnformatted(protected_root);
@@ -98,42 +97,31 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   free(protected_json);
   cJSON_Delete(protected_root);
 
-  // Sign: SHA-512(protected_b64 "." payload_b64) with P-521
+  // Sign: SHA-256(protected_b64 "." payload_b64) with P-256 via TEE
   size_t signing_input_size =
       strlen(protected_b64) + 1 + strlen(payload_b64) + 1;
   char *signing_input = (char *)malloc(signing_input_size);
   snprintf(signing_input, signing_input_size, "%s.%s", protected_b64,
            payload_b64);
 
-  uint8_t hash[64];
-  mbedtls_sha512((const uint8_t *)signing_input, strlen(signing_input), hash,
+  uint8_t hash[32];
+  mbedtls_sha256((const uint8_t *)signing_input, strlen(signing_input), hash,
                  0);
   free(signing_input);
 
-  // Derive signing key on-demand, sign, then wipe
-  uint8_t sig_priv[EC_PRIVATE_KEY_SIZE];
-  if (!keystore.derive_signing_key(sig_priv)) {
-    ESP_LOGE(TAG_HANDLERS, "Failed to derive signing key");
-    free(payload_b64);
-    free(protected_b64);
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                        "Key derivation failed");
-    return ESP_FAIL;
-  }
+  // Sign via TEE — private key never leaves the TEE
+  uint8_t signature[TEE_EC_SIGNATURE_SIZE]; // r(32) + s(32)
+  esp_err_t sign_err = tang_tee_sign(hash, sizeof(hash), signature);
 
-  uint8_t signature[EC_PUBLIC_KEY_SIZE]; // r(66) + s(66)
-  bool sign_ok = EC::sign(hash, sizeof(hash), sig_priv, signature);
-  mbedtls_platform_zeroize(sig_priv, sizeof(sig_priv));
-
-  if (!sign_ok) {
-    ESP_LOGE(TAG_HANDLERS, "Software signing failed");
+  if (sign_err != ESP_OK) {
+    ESP_LOGE(TAG_HANDLERS, "TEE signing failed: %s", esp_err_to_name(sign_err));
     free(payload_b64);
     free(protected_b64);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Signing failed");
     return ESP_FAIL;
   }
 
-  char sig_b64[192] = {0};
+  char sig_b64[96] = {0};
   b64url_encode_buf(signature, sizeof(signature), sig_b64, sizeof(sig_b64));
 
   cJSON *jws_root = cJSON_CreateObject();
@@ -212,28 +200,20 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
 
   cJSON_Delete(req_doc);
 
-  // Derive exchange key for the matched generation
-  uint8_t exc_priv[EC_PRIVATE_KEY_SIZE];
-  if (!keystore.derive_exchange_key(generation, exc_priv)) {
-    ESP_LOGE(TAG_HANDLERS, "Failed to derive exchange key gen %u", generation);
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                        "Key derivation failed");
-    return ESP_FAIL;
-  }
-
+  // ECDH via TEE — exchange private key never leaves the TEE
   uint8_t shared_point[EC_PUBLIC_KEY_SIZE];
-  bool ecdh_ok = EC::ecdh_compute_shared_point(client_pub_key, exc_priv,
-                                                shared_point, true);
-  mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
+  esp_err_t ecdh_err = tang_tee_ecdh(client_pub_key, generation, shared_point);
 
-  if (!ecdh_ok) {
+  if (ecdh_err != ESP_OK) {
+    ESP_LOGE(TAG_HANDLERS, "TEE ECDH failed for gen %u: %s", generation,
+             esp_err_to_name(ecdh_err));
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "ECDH computation failed");
     return ESP_FAIL;
   }
 
-  char shared_x_b64[96] = {0};
-  char shared_y_b64[96] = {0};
+  char shared_x_b64[48] = {0};
+  char shared_y_b64[48] = {0};
 
   b64url_encode_buf(&shared_point[0], EC_COORDINATE_SIZE, shared_x_b64,
                     sizeof(shared_x_b64));
@@ -243,7 +223,7 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
   cJSON *resp_root = cJSON_CreateObject();
   cJSON_AddStringToObject(resp_root, "alg", "ECMR");
   cJSON_AddStringToObject(resp_root, "kty", "EC");
-  cJSON_AddStringToObject(resp_root, "crv", "P-521");
+  cJSON_AddStringToObject(resp_root, "crv", "P-256");
   cJSON_AddStringToObject(resp_root, "x", shared_x_b64);
   cJSON_AddStringToObject(resp_root, "y", shared_y_b64);
   cJSON *key_ops = cJSON_CreateArray();
@@ -275,24 +255,24 @@ static esp_err_t handle_reboot(httpd_req_t *req) {
 }
 
 // Compute JWK Thumbprint (RFC 7638) for the exchange key in a given slot.
-// For EC P-521: SHA-256({"crv":"P-521","kty":"EC","x":"...","y":"..."})
+// For EC P-256: SHA-256({"crv":"P-256","kty":"EC","x":"...","y":"..."})
 // Writes base64url-encoded thumbprint to out_buf (must be >= 44 bytes).
 static bool compute_exchange_key_thumbprint(int s, char *out_buf,
                                             size_t out_buf_size) {
   if (!keystore.exc_pub_loaded || s < 0 || s >= NUM_EXCHANGE_KEYS)
     return false;
 
-  char x_b64[96] = {0}, y_b64[96] = {0};
+  char x_b64[48] = {0}, y_b64[48] = {0};
   b64url_encode_buf(&keystore.exc_pub[s][0], EC_COORDINATE_SIZE, x_b64,
                     sizeof(x_b64));
   b64url_encode_buf(&keystore.exc_pub[s][EC_COORDINATE_SIZE],
                     EC_COORDINATE_SIZE, y_b64, sizeof(y_b64));
 
   // RFC 7638: members in lexicographic order, no whitespace
-  char canonical[384];
+  char canonical[256];
   int len =
       snprintf(canonical, sizeof(canonical),
-               "{\"crv\":\"P-521\",\"kty\":\"EC\",\"x\":\"%s\",\"y\":\"%s\"}",
+               "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"%s\",\"y\":\"%s\"}",
                x_b64, y_b64);
   if (len <= 0 || (size_t)len >= sizeof(canonical))
     return false;

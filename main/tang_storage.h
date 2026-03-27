@@ -2,10 +2,9 @@
 #define TANG_STORAGE_H
 
 #include "crypto.h"
-#include "provision.h"
+#include "tang_tee_service.h"
 #include <cstring>
 #include <esp_log.h>
-#include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -32,16 +31,13 @@ public:
   // Starts at NUM_EXCHANGE_KEYS-1 so first activation produces all keys.
   unsigned int gen;
 
-  // Password hash kept in RAM after activation (PBKDF2 output from browser)
-  uint8_t password_hash[32];
   bool activated;
 
   TangKeyStore()
-      : sig_loaded(false), exc_pub_loaded(false),
-        gen(NUM_EXCHANGE_KEYS - 1), activated(false) {
+      : sig_loaded(false), exc_pub_loaded(false), gen(NUM_EXCHANGE_KEYS - 1),
+        activated(false) {
     memset(sig_pub, 0, sizeof(sig_pub));
     memset(exc_pub, 0, sizeof(exc_pub));
-    memset(password_hash, 0, sizeof(password_hash));
   }
 
   // Slot index for a given generation number
@@ -83,154 +79,32 @@ public:
     return found;
   }
 
-  // Derive a 66-byte private key using HKDF-Expand-like construction with
-  // HMAC-SHA512. Two rounds produce 128 bytes; we take the first 66.
-  //   T1 = HMAC-SHA512(master_key, info || 0x01)
-  //   T2 = HMAC-SHA512(master_key, T1 || info || 0x02)
-  //   output = (T1 || T2)[0..EC_PRIVATE_KEY_SIZE]
-  static bool derive_ec_private_key(const uint8_t *master_key,
-                                    const uint8_t *info, size_t info_len,
-                                    uint8_t *out) {
-    const mbedtls_md_info_t *md_info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA512);
+  // Derive all keys via TEE, compute public keys.
+  // password_hash is passed to the TEE and immediately forgotten by REE.
+  bool derive_and_verify(const uint8_t *password_hash) {
+    // Buffer for all public keys: signing + NUM_EXCHANGE_KEYS exchange keys
+    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * EC_PUBLIC_KEY_SIZE];
 
-    // T1 = HMAC-SHA512(master_key, info || 0x01)
-    uint8_t t1[64];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    int ret = mbedtls_md_setup(&ctx, md_info, 1);
-    if (ret != 0) {
-      mbedtls_md_free(&ctx);
+    esp_err_t err =
+        tang_tee_activate(password_hash, gen, NUM_EXCHANGE_KEYS, pub_keys_buf);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG_STORAGE, "TEE activation failed: %s", esp_err_to_name(err));
+      sig_loaded = false;
+      exc_pub_loaded = false;
       return false;
     }
 
-    ret = mbedtls_md_hmac_starts(&ctx, master_key, 32);
-    if (ret == 0)
-      ret = mbedtls_md_hmac_update(&ctx, info, info_len);
-    uint8_t counter = 0x01;
-    if (ret == 0)
-      ret = mbedtls_md_hmac_update(&ctx, &counter, 1);
-    if (ret == 0)
-      ret = mbedtls_md_hmac_finish(&ctx, t1);
-
-    if (ret != 0) {
-      mbedtls_md_free(&ctx);
-      return false;
-    }
-
-    // T2 = HMAC-SHA512(master_key, T1 || info || 0x02)
-    uint8_t t2[64];
-    ret = mbedtls_md_hmac_reset(&ctx);
-    if (ret == 0)
-      ret = mbedtls_md_hmac_update(&ctx, t1, 64);
-    if (ret == 0)
-      ret = mbedtls_md_hmac_update(&ctx, info, info_len);
-    counter = 0x02;
-    if (ret == 0)
-      ret = mbedtls_md_hmac_update(&ctx, &counter, 1);
-    if (ret == 0)
-      ret = mbedtls_md_hmac_finish(&ctx, t2);
-    mbedtls_md_free(&ctx);
-
-    if (ret != 0)
-      return false;
-
-    // Take first EC_PRIVATE_KEY_SIZE (66) bytes from T1(64) || T2(64)
-    memcpy(out, t1, 64);
-    memcpy(out + 64, t2, EC_PRIVATE_KEY_SIZE - 64);
-
-    mbedtls_platform_zeroize(t1, sizeof(t1));
-    mbedtls_platform_zeroize(t2, sizeof(t2));
-
-    return true;
-  }
-
-  // Derive signing private key from password hash via hardware HMAC.
-  bool derive_signing_key(uint8_t *sig_priv_out) {
-    if (!activated)
-      return false;
-
-    uint8_t master_key[32];
-    if (!derive_aes_key(password_hash, master_key)) {
-      ESP_LOGE(TAG_STORAGE, "Hardware HMAC failed");
-      return false;
-    }
-
-    const char *info = "tang-signing-key";
-    bool ok = derive_ec_private_key(master_key, (const uint8_t *)info,
-                                    strlen(info), sig_priv_out);
-    mbedtls_platform_zeroize(master_key, sizeof(master_key));
-
-    if (!ok) {
-      ESP_LOGE(TAG_STORAGE, "Failed to derive signing key");
-      return false;
-    }
-    return true;
-  }
-
-  // Derive exchange private key for a specific generation (any counter value).
-  bool derive_exchange_key(unsigned int generation, uint8_t *exc_priv_out) {
-    if (!activated)
-      return false;
-
-    uint8_t master_key[32];
-    if (!derive_aes_key(password_hash, master_key)) {
-      ESP_LOGE(TAG_STORAGE, "Hardware HMAC failed");
-      return false;
-    }
-
-    char info[32];
-    int info_len =
-        snprintf(info, sizeof(info), "tang-exchange-key-%u", generation);
-
-    bool ok = derive_ec_private_key(master_key, (const uint8_t *)info,
-                                    info_len, exc_priv_out);
-    mbedtls_platform_zeroize(master_key, sizeof(master_key));
-
-    if (!ok) {
-      ESP_LOGE(TAG_STORAGE, "Failed to derive exchange key gen %u", generation);
-      return false;
-    }
-    return true;
-  }
-
-  // Derive all keys, compute public keys.
-  bool derive_and_verify() {
-    // Derive signing key and compute public key
-    uint8_t sig_priv[EC_PRIVATE_KEY_SIZE];
-    if (!derive_signing_key(sig_priv))
-      return false;
-
-    bool ok = EC::compute_public_key(sig_priv, sig_pub);
-    mbedtls_platform_zeroize(sig_priv, sizeof(sig_priv));
-
-    if (!ok) {
-      ESP_LOGE(TAG_STORAGE, "Failed to compute signing public key");
-      return false;
-    }
+    // Copy signing public key (first 64 bytes)
+    memcpy(sig_pub, pub_keys_buf, EC_PUBLIC_KEY_SIZE);
     sig_loaded = true;
 
-    // Derive all active exchange keys: gen, gen-1, ... gen-(NUM_EXCHANGE_KEYS-1)
-    for (int offset = 0; offset < NUM_EXCHANGE_KEYS; offset++) {
-      unsigned int g = gen - offset;
-      int s = slot(g);
-
-      uint8_t exc_priv[EC_PRIVATE_KEY_SIZE];
-      if (!derive_exchange_key(g, exc_priv))
-        return false;
-
-      ok = EC::compute_public_key(exc_priv, exc_pub[s]);
-      mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
-
-      if (!ok) {
-        ESP_LOGE(TAG_STORAGE,
-                 "Failed to compute exchange public key gen %u (slot %d)", g,
-                 s);
-        return false;
-      }
+    // Copy exchange public keys (64 bytes each, indexed by slot)
+    for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
+      memcpy(exc_pub[s], pub_keys_buf + (1 + s) * EC_PUBLIC_KEY_SIZE,
+             EC_PUBLIC_KEY_SIZE);
     }
-
     exc_pub_loaded = true;
+
     return true;
   }
 
@@ -242,8 +116,8 @@ public:
       return false;
 
     bool ok = true;
-    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub,
-                             EC_PUBLIC_KEY_SIZE) == ESP_OK);
+    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub, EC_PUBLIC_KEY_SIZE) ==
+                ESP_OK);
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
       ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
@@ -258,8 +132,9 @@ public:
     nvs_close(handle);
 
     if (ok)
-      ESP_LOGI(TAG_STORAGE, "Public keys stored in NVS (gen %u, %d active keys)",
-               gen, NUM_EXCHANGE_KEYS);
+      ESP_LOGI(TAG_STORAGE,
+               "Public keys stored in NVS (gen %u, %d active keys)", gen,
+               NUM_EXCHANGE_KEYS);
     return ok;
   }
 
@@ -350,8 +225,8 @@ public:
     return true;
   }
 
-  // Rotate: increment gen, derive new key, overwrite oldest slot in NVS.
-  // Requires activation (password hash must be in RAM).
+  // Rotate: increment gen, derive new key via TEE, overwrite oldest slot in
+  // NVS.
   bool rotate() {
     if (!activated)
       return false;
@@ -359,43 +234,39 @@ public:
     unsigned int new_gen = gen + 1;
     int s = slot(new_gen);
 
-    // Derive new exchange key and compute its public key
-    uint8_t exc_priv[EC_PRIVATE_KEY_SIZE];
-    if (!derive_exchange_key(new_gen, exc_priv))
-      return false;
-
-    bool ok = EC::compute_public_key(exc_priv, exc_pub[s]);
-    mbedtls_platform_zeroize(exc_priv, sizeof(exc_priv));
-
-    if (!ok) {
-      ESP_LOGE(TAG_STORAGE, "Failed to compute public key for gen %u", new_gen);
+    // Derive new exchange key via TEE
+    uint8_t new_pub[EC_PUBLIC_KEY_SIZE];
+    esp_err_t err = tang_tee_rotate(new_gen, new_pub);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG_STORAGE, "TEE rotate failed for gen %u", new_gen);
       return false;
     }
 
+    memcpy(exc_pub[s], new_pub, EC_PUBLIC_KEY_SIZE);
+
     // Persist the new slot and updated gen counter
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
+    err = nvs_open("tang-server", NVS_READWRITE, &handle);
     if (err != ESP_OK)
       return false;
 
-    ok = (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
-                        EC_PUBLIC_KEY_SIZE) == ESP_OK) &&
-         (nvs_set_u32(handle, "gen", (uint32_t)new_gen) == ESP_OK) &&
-         (nvs_commit(handle) == ESP_OK);
+    bool ok = (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
+                            EC_PUBLIC_KEY_SIZE) == ESP_OK) &&
+              (nvs_set_u32(handle, "gen", (uint32_t)new_gen) == ESP_OK) &&
+              (nvs_commit(handle) == ESP_OK);
     nvs_close(handle);
 
     if (ok) {
       unsigned int dropped = gen - (NUM_EXCHANGE_KEYS - 1);
       gen = new_gen;
-      ESP_LOGI(TAG_STORAGE,
-               "Rotated: gen %u (dropped %u, %d active keys)", gen, dropped,
-               NUM_EXCHANGE_KEYS);
+      ESP_LOGI(TAG_STORAGE, "Rotated: gen %u (dropped %u, %d active keys)", gen,
+               dropped, NUM_EXCHANGE_KEYS);
     }
     return ok;
   }
 
   void wipe_secrets() {
-    mbedtls_platform_zeroize(password_hash, sizeof(password_hash));
+    tang_tee_lock();
     activated = false;
   }
 };

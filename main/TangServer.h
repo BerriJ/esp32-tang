@@ -165,9 +165,8 @@ void setup() {
       ESP_LOGE(TAG, "eFuse KEY5 provisioning failed");
     }
   } else {
-    ESP_LOGE(TAG,
-             "eFuse KEY5 has wrong purpose (expected HMAC_UP) — "
-             "HMAC key derivation will not work");
+    ESP_LOGE(TAG, "eFuse KEY5 has wrong purpose (expected HMAC_UP) — "
+                  "HMAC key derivation will not work");
   }
 
   // 3. Load signing public key if available (for reference before activation)

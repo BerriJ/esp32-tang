@@ -1,8 +1,8 @@
 #ifndef ZK_AUTH_H
 #define ZK_AUTH_H
 
-#include "provision.h"
 #include "tang_storage.h"
+#include "tang_tee_service.h"
 #include <cJSON.h>
 #include <esp_mac.h>
 #include <esp_system.h>
@@ -20,9 +20,9 @@
 // Zero-Knowledge Authentication Module
 // Implements Client-Side KDF + ECIES Tunnel for ESP32-C6
 //
-// After ECIES decryption the PBKDF2 hash is run through the hardware HMAC
-// peripheral (eFuse KEY5) to produce a device-bound AES-256 key.  That key
-// encrypts/decrypts the exchange private key via AES-256-GCM.
+// After ECIES decryption the PBKDF2 hash is passed to the TEE which
+// derives the master key via the hardware HMAC peripheral (eFuse KEY5).
+// Private keys never leave the TEE.
 
 // Forward declarations — defined in TangServer.h after all includes
 extern TangKeyStore keystore;
@@ -36,7 +36,7 @@ private:
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
 
-  uint8_t device_public_key[133]; // Uncompressed: 0x04 + X(66) + Y(66)
+  uint8_t device_public_key[65]; // Uncompressed P-256: 0x04 + X(32) + Y(32)
 
   bool initialized;
 
@@ -98,8 +98,8 @@ private:
       return NULL;
     }
 
-    uint8_t shared_secret_raw[66];
-    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 66);
+    uint8_t shared_secret_raw[32];
+    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 32);
     mbedtls_mpi_free(&shared_secret_mpi);
     if (ret != 0) {
       *error_json = strdup("{\"error\":\"Shared secret export failed\"}");
@@ -240,7 +240,7 @@ public:
       return false;
     }
 
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP521R1);
+    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret != 0) {
       printf("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
       return false;
@@ -258,7 +258,7 @@ public:
     ret = mbedtls_ecp_point_write_binary(
         &grp, &device_public_Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen,
         device_public_key, sizeof(device_public_key));
-    if (ret != 0 || olen != 133) {
+    if (ret != 0 || olen != 65) {
       printf("mbedtls_ecp_point_write_binary failed: -0x%04x\n", -ret);
       return false;
     }
@@ -267,7 +267,7 @@ public:
 
     printf("\n=== ZK Authentication Initialized ===\n");
     printf("Ephemeral Tunnel Key: ");
-    for (int i = 0; i < 133; i++)
+    for (int i = 0; i < 65; i++)
       printf("%02x", device_public_key[i]);
     printf("\n=====================================\n\n");
 
@@ -276,8 +276,8 @@ public:
 
   // Return ephemeral tunnel public key + MAC address for the browser
   char *get_identity_json() {
-    char pubkey_hex[267]; // 133 bytes * 2 + null
-    bin_to_hex(device_public_key, 133, pubkey_hex);
+    char pubkey_hex[131]; // 65 bytes * 2 + null
+    bin_to_hex(device_public_key, 65, pubkey_hex);
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -294,10 +294,8 @@ public:
   }
 
   // Process unlock request with ECIES tunnel.
-  // After decryption:
-  //   1. Derive device-bound AES key via hardware HMAC
-  //   2. First-time: generate & encrypt exchange key
-  //      Subsequent: decrypt exchange key (GCM tag = password check)
+  // After decryption, password_hash is passed to TEE for key derivation.
+  // The REE never stores the password hash.
   char *process_unlock(const char *json_payload, bool *success_out) {
     *success_out = false;
 
@@ -339,16 +337,10 @@ public:
       return strdup("{\"error\":\"Invalid payload size\"}");
     }
 
-    // --- Store password hash and derive keys for verification ---
-    memcpy(keystore.password_hash, decrypted, 32);
-    mbedtls_platform_zeroize(decrypted, 32);
-    free(decrypted);
-    keystore.activated = true;
-
-    // --- Derive keys, verify or store public keys ---
+    // --- Pass password hash to TEE for key derivation ---
     bool verification_result = false;
 
-    if (keystore.derive_and_verify()) {
+    if (keystore.derive_and_verify(decrypted)) {
       if (!keystore.has_exchange_key()) {
         // First activation: store derived public keys in NVS
         printf("First-time setup: storing derived public keys\n");
@@ -359,8 +351,15 @@ public:
       }
     }
 
-    if (!verification_result)
+    // Wipe password_hash from REE immediately
+    mbedtls_platform_zeroize(decrypted, 32);
+    free(decrypted);
+
+    if (verification_result) {
+      keystore.activated = true;
+    } else {
       keystore.wipe_secrets();
+    }
 
     cJSON *resp_doc = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_doc, "success", verification_result);
@@ -384,7 +383,7 @@ public:
 
   // Process password change request.
   // Expects ECIES blob containing old_hash(32) + new_hash(32) = 64 bytes.
-  // Verifies old password, derives new keys from new password, overwrites NVS.
+  // Passes both to TEE which verifies old and derives from new.
   char *process_change_password(const char *json_payload, bool *success_out) {
     *success_out = false;
 
@@ -429,42 +428,39 @@ public:
     }
 
     // First 32 bytes = old password hash, last 32 = new password hash
-    uint8_t old_hash[32], new_hash[32];
-    memcpy(old_hash, decrypted, 32);
-    memcpy(new_hash, decrypted + 32, 32);
+    uint8_t *old_hash = decrypted;
+    uint8_t *new_hash = decrypted + 32;
+
+    // Change password via TEE — TEE verifies old, derives new, returns pub keys
+    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * EC_PUBLIC_KEY_SIZE];
+    esp_err_t err = tang_tee_change_password(old_hash, new_hash,
+                                             NUM_EXCHANGE_KEYS, pub_keys_buf);
+
     mbedtls_platform_zeroize(decrypted, 64);
     free(decrypted);
 
-    // Verify old password by deriving keys and comparing to NVS
-    memcpy(keystore.password_hash, old_hash, 32);
-    mbedtls_platform_zeroize(old_hash, 32);
-    keystore.activated = true;
-
-    if (!keystore.derive_and_verify() || !keystore.verify_public_keys()) {
-      keystore.wipe_secrets();
-      mbedtls_platform_zeroize(new_hash, 32);
-      printf("Password change FAILED: old password incorrect\n");
-      return strdup(
-          "{\"success\":false,\"error\":\"Current password incorrect\"}");
-    }
-
-    printf("Old password verified, deriving new keys...\n");
-
-    // Derive new keys from new password hash
-    memcpy(keystore.password_hash, new_hash, 32);
-    mbedtls_platform_zeroize(new_hash, 32);
-    keystore.activated = true;
-    keystore.gen =
-        NUM_EXCHANGE_KEYS - 1; // Reset rotation — all keys change with new password
-
-    if (!keystore.derive_and_verify()) {
-      keystore.wipe_secrets();
-      printf("Password change FAILED: key derivation error\n");
+    if (err != ESP_OK) {
+      printf("Password change FAILED: %s\n", esp_err_to_name(err));
+      if (err == ESP_ERR_INVALID_ARG) {
+        return strdup(
+            "{\"success\":false,\"error\":\"Current password incorrect\"}");
+      }
       return strdup(
           "{\"success\":false,\"error\":\"Failed to derive new keys\"}");
     }
 
-    // Store new public keys in NVS (overwrites old ones)
+    // Update keystore with new public keys from TEE
+    memcpy(keystore.sig_pub, pub_keys_buf, EC_PUBLIC_KEY_SIZE);
+    keystore.sig_loaded = true;
+    for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
+      memcpy(keystore.exc_pub[s], pub_keys_buf + (1 + s) * EC_PUBLIC_KEY_SIZE,
+             EC_PUBLIC_KEY_SIZE);
+    }
+    keystore.exc_pub_loaded = true;
+    keystore.gen = NUM_EXCHANGE_KEYS - 1;
+    keystore.activated = true;
+
+    // Store new public keys in NVS
     if (!keystore.store_public_keys()) {
       keystore.wipe_secrets();
       printf("Password change FAILED: NVS write error\n");

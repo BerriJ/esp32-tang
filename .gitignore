@@ -52,6 +52,9 @@ sdkconfig.old
 managed_components/
 .cache/
 
+# Provided by Nix flake (symlink to idf-extra-components)
+components/json_generator
+
 # Cryptographic files
 *.jwk
 *.jwe

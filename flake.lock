@@ -36,6 +36,22 @@
         "type": "github"
       }
     },
+    "idf-extra-components": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1773990843,
+        "narHash": "sha256-Kmu6XN68SRCQXaXNKg5dce3oPYszpr9yM0mLFuZY5z4=",
+        "owner": "espressif",
+        "repo": "idf-extra-components",
+        "rev": "78a16155b4842a120f46a3e57d8c8898f15c2f71",
+        "type": "github"
+      },
+      "original": {
+        "owner": "espressif",
+        "repo": "idf-extra-components",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1771419570,
@@ -74,6 +90,7 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
+        "idf-extra-components": "idf-extra-components",
         "nixpkgs": [
           "nixpkgs-esp-dev",
           "nixpkgs"
