@@ -16,19 +16,15 @@ static const char *TAG_STORAGE = "tang_storage";
 
 const int NUM_EXCHANGE_KEYS = CONFIG_NUM_EXCHANGE_KEYS;
 
-const int EC_PRIVATE_KEY_SIZE = 32; // Scalar value
-const int EC_PUBLIC_KEY_SIZE = 64;  // Uncompressed point (x + y)
-const int EC_COORDINATE_SIZE = 32;  // Single coordinate (x or y)
-
 class TangKeyStore {
 public:
   // Public keys (loaded from NVS at boot, available without activation)
-  uint8_t sig_pub[EC_PUBLIC_KEY_SIZE];
+  uint8_t sig_pub[TEE_EC_PUBLIC_KEY_SIZE];
   bool sig_loaded;
 
   // Exchange public keys stored in NUM_EXCHANGE_KEYS slots (ring buffer indexed
   // by gen % NUM_EXCHANGE_KEYS)
-  uint8_t exc_pub[NUM_EXCHANGE_KEYS][EC_PUBLIC_KEY_SIZE];
+  uint8_t exc_pub[NUM_EXCHANGE_KEYS][TEE_EC_PUBLIC_KEY_SIZE];
   bool exc_pub_loaded;
 
   // Generation counter (monotonically increasing, newest key).
@@ -67,7 +63,7 @@ public:
 
     size_t len = 0;
     err = nvs_get_blob(handle, "exc_pub_0", nullptr, &len);
-    bool found = (err == ESP_OK && len == EC_PUBLIC_KEY_SIZE);
+    bool found = (err == ESP_OK && len == TEE_EC_PUBLIC_KEY_SIZE);
     nvs_close(handle);
     return found;
   }
@@ -80,7 +76,7 @@ public:
 
     size_t len = 0;
     err = nvs_get_blob(handle, "sig_pub", nullptr, &len);
-    bool found = (err == ESP_OK && len == EC_PUBLIC_KEY_SIZE);
+    bool found = (err == ESP_OK && len == TEE_EC_PUBLIC_KEY_SIZE);
     nvs_close(handle);
     return found;
   }
@@ -89,7 +85,7 @@ public:
   // password_hash is passed to the TEE and immediately forgotten by REE.
   bool derive_and_verify(const uint8_t *password_hash) {
     // Buffer for all public keys: signing + NUM_EXCHANGE_KEYS exchange keys
-    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * EC_PUBLIC_KEY_SIZE];
+    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
 
     esp_err_t err =
         tang_tee_activate(password_hash, gen, NUM_EXCHANGE_KEYS, pub_keys_buf);
@@ -101,13 +97,13 @@ public:
     }
 
     // Copy signing public key (first 64 bytes)
-    memcpy(sig_pub, pub_keys_buf, EC_PUBLIC_KEY_SIZE);
+    memcpy(sig_pub, pub_keys_buf, TEE_EC_PUBLIC_KEY_SIZE);
     sig_loaded = true;
 
     // Copy exchange public keys (64 bytes each, indexed by slot)
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      memcpy(exc_pub[s], pub_keys_buf + (1 + s) * EC_PUBLIC_KEY_SIZE,
-             EC_PUBLIC_KEY_SIZE);
+      memcpy(exc_pub[s], pub_keys_buf + (1 + s) * TEE_EC_PUBLIC_KEY_SIZE,
+             TEE_EC_PUBLIC_KEY_SIZE);
     }
     exc_pub_loaded = true;
 
@@ -122,12 +118,12 @@ public:
       return false;
 
     bool ok = true;
-    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub, EC_PUBLIC_KEY_SIZE) ==
+    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub, TEE_EC_PUBLIC_KEY_SIZE) ==
                 ESP_OK);
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
       ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
-                               EC_PUBLIC_KEY_SIZE) == ESP_OK);
+                               TEE_EC_PUBLIC_KEY_SIZE) == ESP_OK);
     }
 
     ok = ok && (nvs_set_u32(handle, "gen", (uint32_t)gen) == ESP_OK);
@@ -152,19 +148,19 @@ public:
       return false;
 
     // Verify signing key (constant-time comparison)
-    uint8_t stored[EC_PUBLIC_KEY_SIZE];
-    size_t len = EC_PUBLIC_KEY_SIZE;
+    uint8_t stored[TEE_EC_PUBLIC_KEY_SIZE];
+    size_t len = TEE_EC_PUBLIC_KEY_SIZE;
     bool mismatch = false;
     if (nvs_get_blob(handle, "sig_pub", stored, &len) != ESP_OK ||
-        mbedtls_ct_memcmp(sig_pub, stored, EC_PUBLIC_KEY_SIZE) != 0) {
+        mbedtls_ct_memcmp(sig_pub, stored, TEE_EC_PUBLIC_KEY_SIZE) != 0) {
       mismatch = true;
     }
 
     // Verify all exchange key slots (constant-time comparison)
     for (int s = 0; s < NUM_EXCHANGE_KEYS && !mismatch; s++) {
-      len = EC_PUBLIC_KEY_SIZE;
+      len = TEE_EC_PUBLIC_KEY_SIZE;
       if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
-          mbedtls_ct_memcmp(exc_pub[s], stored, EC_PUBLIC_KEY_SIZE) != 0) {
+          mbedtls_ct_memcmp(exc_pub[s], stored, TEE_EC_PUBLIC_KEY_SIZE) != 0) {
         mismatch = true;
       }
     }
@@ -191,11 +187,11 @@ public:
     if (err != ESP_OK)
       return false;
 
-    size_t len = EC_PUBLIC_KEY_SIZE;
+    size_t len = TEE_EC_PUBLIC_KEY_SIZE;
     err = nvs_get_blob(handle, "sig_pub", sig_pub, &len);
     nvs_close(handle);
 
-    if (err == ESP_OK && len == EC_PUBLIC_KEY_SIZE) {
+    if (err == ESP_OK && len == TEE_EC_PUBLIC_KEY_SIZE) {
       ESP_LOGI(TAG_STORAGE, "Signing public key loaded from NVS");
       return true;
     }
@@ -210,10 +206,10 @@ public:
       return false;
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      size_t len = EC_PUBLIC_KEY_SIZE;
+      size_t len = TEE_EC_PUBLIC_KEY_SIZE;
       if (nvs_get_blob(handle, exc_pub_nvs_key(s), exc_pub[s], &len) !=
               ESP_OK ||
-          len != EC_PUBLIC_KEY_SIZE) {
+          len != TEE_EC_PUBLIC_KEY_SIZE) {
         nvs_close(handle);
         return false;
       }
@@ -242,14 +238,14 @@ public:
     int s = slot(new_gen);
 
     // Derive new exchange key via TEE
-    uint8_t new_pub[EC_PUBLIC_KEY_SIZE];
+    uint8_t new_pub[TEE_EC_PUBLIC_KEY_SIZE];
     esp_err_t err = tang_tee_rotate(new_gen, new_pub);
     if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "TEE rotate failed for gen %u", new_gen);
       return false;
     }
 
-    memcpy(exc_pub[s], new_pub, EC_PUBLIC_KEY_SIZE);
+    memcpy(exc_pub[s], new_pub, TEE_EC_PUBLIC_KEY_SIZE);
 
     // Persist the new slot and updated gen counter
     nvs_handle_t handle;
@@ -258,7 +254,7 @@ public:
       return false;
 
     bool ok = (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
-                            EC_PUBLIC_KEY_SIZE) == ESP_OK) &&
+                            TEE_EC_PUBLIC_KEY_SIZE) == ESP_OK) &&
               (nvs_set_u32(handle, "gen", (uint32_t)new_gen) == ESP_OK) &&
               (nvs_commit(handle) == ESP_OK);
     nvs_close(handle);

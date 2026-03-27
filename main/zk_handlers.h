@@ -6,13 +6,49 @@
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <esp_timer.h>
-#include <string.h>
 
 static const char *TAG_ZK = "zk_handlers";
 
 extern ZKAuth zk_auth;
 extern TangKeyStore keystore;
 extern httpd_handle_t server_http;
+
+// Send a JSON response with CORS headers
+static void send_json_response(httpd_req_t *req, const char *json,
+                               bool success) {
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
+  httpd_resp_sendstr(req, json);
+}
+
+// Common handler for POST endpoints that process ECIES payloads via ZKAuth.
+// processor: ZKAuth method that takes (json_payload, success_out) and returns
+// response JSON.
+typedef char *(ZKAuth::*zk_processor_t)(const char *, bool *);
+
+static esp_err_t handle_zk_post(httpd_req_t *req, zk_processor_t processor) {
+  char content[1024];
+  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+  if (ret <= 0) {
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT)
+      httpd_resp_send_408(req);
+    return ESP_FAIL;
+  }
+  content[ret] = '\0';
+
+  bool success = false;
+  char *response = (zk_auth.*processor)(content, &success);
+
+  if (!response) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
+    return ESP_FAIL;
+  }
+
+  send_json_response(req, response, success);
+  free(response);
+  return ESP_OK;
+}
 
 // Serve the main web interface
 static esp_err_t handle_zk_root(httpd_req_t *req) {
@@ -21,10 +57,9 @@ static esp_err_t handle_zk_root(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// API endpoint: Get device identity
 static esp_err_t handle_zk_identity(httpd_req_t *req) {
   char *json_response = zk_auth.get_identity_json();
-  if (json_response == NULL) {
+  if (!json_response) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "Failed to get identity");
     return ESP_FAIL;
@@ -37,33 +72,8 @@ static esp_err_t handle_zk_identity(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// API endpoint: Process unlock request
 static esp_err_t handle_zk_unlock(httpd_req_t *req) {
-  // Read POST body
-  char content[1024];
-  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-  if (ret <= 0) {
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-    }
-    return ESP_FAIL;
-  }
-  content[ret] = '\0';
-
-  bool success = false;
-  char *response = zk_auth.process_unlock(content, &success);
-
-  if (response == NULL) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
-    return ESP_FAIL;
-  }
-
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
-  httpd_resp_sendstr(req, response);
-  free(response);
-  return ESP_OK;
+  return handle_zk_post(req, &ZKAuth::process_unlock);
 }
 
 static esp_err_t handle_zk_status(httpd_req_t *req) {
@@ -81,7 +91,6 @@ static esp_err_t handle_zk_status(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// API endpoint: Lock the device
 static esp_err_t handle_zk_lock(httpd_req_t *req) {
   zk_auth.lock();
   httpd_resp_set_type(req, "application/json");
@@ -90,71 +99,12 @@ static esp_err_t handle_zk_lock(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// API endpoint: Change password (requires device to be unlocked)
 static esp_err_t handle_zk_change_password(httpd_req_t *req) {
-  char content[1024];
-  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-  if (ret <= 0) {
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-    }
-    return ESP_FAIL;
-  }
-  content[ret] = '\0';
-
-  bool success = false;
-  char *response = zk_auth.process_change_password(content, &success);
-
-  if (response == NULL) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
-    return ESP_FAIL;
-  }
-
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
-  httpd_resp_sendstr(req, response);
-  free(response);
-  return ESP_OK;
+  return handle_zk_post(req, &ZKAuth::process_change_password);
 }
 
-// API endpoint: Rotate to next exchange key generation (requires unlock +
-// password)
 static esp_err_t handle_zk_rotate(httpd_req_t *req) {
-  char content[1024];
-  int ret = httpd_req_recv(req, content, sizeof(content) - 1);
-  if (ret <= 0) {
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
-    }
-    return ESP_FAIL;
-  }
-  content[ret] = '\0';
-
-  bool success = false;
-  char *response = zk_auth.process_rotate(content, &success);
-
-  if (response == NULL) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
-    return ESP_FAIL;
-  }
-
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
-  httpd_resp_sendstr(req, response);
-  free(response);
-  return ESP_OK;
-}
-
-// Handle CORS preflight
-static esp_err_t handle_zk_options(httpd_req_t *req) {
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
-  httpd_resp_set_status(req, "204 No Content");
-  httpd_resp_send(req, NULL, 0);
-  return ESP_OK;
+  return handle_zk_post(req, &ZKAuth::process_rotate);
 }
 
 // Register all ZK auth routes to the HTTP server
@@ -187,7 +137,7 @@ void register_zk_handlers(httpd_handle_t server) {
 
   httpd_uri_t unlock_options_uri = {.uri = "/api/unlock",
                                     .method = HTTP_OPTIONS,
-                                    .handler = handle_zk_options,
+                                    .handler = handle_cors_options,
                                     .user_ctx = NULL};
   httpd_register_uri_handler(server, &unlock_options_uri);
 
@@ -205,7 +155,7 @@ void register_zk_handlers(httpd_handle_t server) {
 
   httpd_uri_t change_password_options_uri = {.uri = "/api/change-password",
                                              .method = HTTP_OPTIONS,
-                                             .handler = handle_zk_options,
+                                             .handler = handle_cors_options,
                                              .user_ctx = NULL};
   httpd_register_uri_handler(server, &change_password_options_uri);
 
@@ -217,7 +167,7 @@ void register_zk_handlers(httpd_handle_t server) {
 
   httpd_uri_t rotate_options_uri = {.uri = "/api/rotate",
                                     .method = HTTP_OPTIONS,
-                                    .handler = handle_zk_options,
+                                    .handler = handle_cors_options,
                                     .user_ctx = NULL};
   httpd_register_uri_handler(server, &rotate_options_uri);
 

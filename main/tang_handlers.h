@@ -33,14 +33,14 @@ static esp_err_t handle_adv(httpd_req_t *req) {
   char sig_x_b64[48] = {0}, sig_y_b64[48] = {0};
   char rec_x_b64[48] = {0}, rec_y_b64[48] = {0};
 
-  b64url_encode_buf(&keystore.sig_pub[0], EC_COORDINATE_SIZE, sig_x_b64,
+  b64url_encode_buf(&keystore.sig_pub[0], TEE_EC_COORDINATE_SIZE, sig_x_b64,
                     sizeof(sig_x_b64));
-  b64url_encode_buf(&keystore.sig_pub[EC_COORDINATE_SIZE], EC_COORDINATE_SIZE,
+  b64url_encode_buf(&keystore.sig_pub[TEE_EC_COORDINATE_SIZE], TEE_EC_COORDINATE_SIZE,
                     sig_y_b64, sizeof(sig_y_b64));
-  b64url_encode_buf(&keystore.exc_pub[adv_slot][0], EC_COORDINATE_SIZE,
+  b64url_encode_buf(&keystore.exc_pub[adv_slot][0], TEE_EC_COORDINATE_SIZE,
                     rec_x_b64, sizeof(rec_x_b64));
-  b64url_encode_buf(&keystore.exc_pub[adv_slot][EC_COORDINATE_SIZE],
-                    EC_COORDINATE_SIZE, rec_y_b64, sizeof(rec_y_b64));
+  b64url_encode_buf(&keystore.exc_pub[adv_slot][TEE_EC_COORDINATE_SIZE],
+                    TEE_EC_COORDINATE_SIZE, rec_y_b64, sizeof(rec_y_b64));
 
   // Build JWK set payload
   cJSON *payload_root = cJSON_CreateObject();
@@ -185,13 +185,13 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
     return ESP_FAIL;
   }
 
-  uint8_t client_pub_key[EC_PUBLIC_KEY_SIZE];
+  uint8_t client_pub_key[TEE_EC_PUBLIC_KEY_SIZE];
 
   if (!b64url_decode_buf(x_item->valuestring, &client_pub_key[0],
-                         EC_COORDINATE_SIZE) ||
+                         TEE_EC_COORDINATE_SIZE) ||
       !b64url_decode_buf(y_item->valuestring,
-                         &client_pub_key[EC_COORDINATE_SIZE],
-                         EC_COORDINATE_SIZE)) {
+                         &client_pub_key[TEE_EC_COORDINATE_SIZE],
+                         TEE_EC_COORDINATE_SIZE)) {
     cJSON_Delete(req_doc);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid key coordinates");
     return ESP_FAIL;
@@ -200,7 +200,7 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
   cJSON_Delete(req_doc);
 
   // ECDH via TEE — exchange private key never leaves the TEE
-  uint8_t shared_point[EC_PUBLIC_KEY_SIZE];
+  uint8_t shared_point[TEE_EC_PUBLIC_KEY_SIZE];
   esp_err_t ecdh_err = tang_tee_ecdh(client_pub_key, generation, shared_point);
 
   if (ecdh_err != ESP_OK) {
@@ -214,9 +214,9 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
   char shared_x_b64[48] = {0};
   char shared_y_b64[48] = {0};
 
-  b64url_encode_buf(&shared_point[0], EC_COORDINATE_SIZE, shared_x_b64,
+  b64url_encode_buf(&shared_point[0], TEE_EC_COORDINATE_SIZE, shared_x_b64,
                     sizeof(shared_x_b64));
-  b64url_encode_buf(&shared_point[EC_COORDINATE_SIZE], EC_COORDINATE_SIZE,
+  b64url_encode_buf(&shared_point[TEE_EC_COORDINATE_SIZE], TEE_EC_COORDINATE_SIZE,
                     shared_y_b64, sizeof(shared_y_b64));
 
   cJSON *resp_root = cJSON_CreateObject();
@@ -249,10 +249,10 @@ static bool compute_exchange_key_thumbprint(int s, char *out_buf,
     return false;
 
   char x_b64[48] = {0}, y_b64[48] = {0};
-  b64url_encode_buf(&keystore.exc_pub[s][0], EC_COORDINATE_SIZE, x_b64,
+  b64url_encode_buf(&keystore.exc_pub[s][0], TEE_EC_COORDINATE_SIZE, x_b64,
                     sizeof(x_b64));
-  b64url_encode_buf(&keystore.exc_pub[s][EC_COORDINATE_SIZE],
-                    EC_COORDINATE_SIZE, y_b64, sizeof(y_b64));
+  b64url_encode_buf(&keystore.exc_pub[s][TEE_EC_COORDINATE_SIZE],
+                    TEE_EC_COORDINATE_SIZE, y_b64, sizeof(y_b64));
 
   // RFC 7638: members in lexicographic order, no whitespace
   char canonical[256];

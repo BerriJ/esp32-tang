@@ -8,6 +8,16 @@
 
 static const char *TAG_PROVISION_HANDLERS = "provision_handlers";
 
+// Shared CORS preflight handler (used by provision and ZK endpoints)
+static esp_err_t handle_cors_options(httpd_req_t *req) {
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+  httpd_resp_set_status(req, "204 No Content");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
 /**
  * API endpoint: Get eFuse provisioning status
  */
@@ -76,18 +86,6 @@ static esp_err_t handle_provision_api(httpd_req_t *req) {
 }
 
 /**
- * Handle CORS preflight for provision API
- */
-static esp_err_t handle_provision_options(httpd_req_t *req) {
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
-  httpd_resp_set_status(req, "204 No Content");
-  httpd_resp_send(req, NULL, 0);
-  return ESP_OK;
-}
-
-/**
  * Register provisioning handlers
  */
 void register_provision_handlers(httpd_handle_t server) {
@@ -105,7 +103,7 @@ void register_provision_handlers(httpd_handle_t server) {
 
   httpd_uri_t provision_options_uri = {.uri = "/api/provision",
                                        .method = HTTP_OPTIONS,
-                                       .handler = handle_provision_options,
+                                       .handler = handle_cors_options,
                                        .user_ctx = NULL};
   httpd_register_uri_handler(server, &provision_options_uri);
 

@@ -4,6 +4,7 @@
 #include "tang_storage.h"
 #include "tang_tee_service.h"
 #include <cJSON.h>
+#include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_system.h>
 #include <mbedtls/aes.h>
@@ -14,7 +15,6 @@
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
-#include <stdio.h>
 #include <string.h>
 
 // Zero-Knowledge Authentication Module
@@ -28,6 +28,8 @@
 extern TangKeyStore keystore;
 extern bool unlocked;
 
+static const char *TAG_ZK_AUTH = "zk_auth";
+
 class ZKAuth {
 private:
   mbedtls_ecp_group grp;
@@ -40,9 +42,9 @@ private:
 
   bool initialized;
 
-  void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex) {
+  static void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex) {
     for (size_t i = 0; i < bin_len; i++) {
-      sprintf(hex + (i * 2), "%02x", bin[i]);
+      snprintf(hex + (i * 2), 3, "%02x", bin[i]);
     }
     hex[bin_len * 2] = '\0';
   }
@@ -174,7 +176,7 @@ private:
     if (hmac_result != 0) {
       free(blob);
       mbedtls_platform_zeroize(enc_key, 32);
-      printf("HMAC verification FAILED\n");
+      ESP_LOGW(TAG_ZK_AUTH, "HMAC verification failed");
       *error_json = strdup(
           "{\"error\":\"Authentication failed - data tampered or wrong key\"}");
       return NULL;
@@ -211,6 +213,51 @@ private:
     return plaintext;
   }
 
+  // Parse ECIES JSON payload and decrypt. Common to all process_* methods.
+  // On success returns heap-allocated plaintext and sets *out_len.
+  // On error returns NULL and sets *error_json.
+  // Caller must zeroize and free the returned plaintext.
+  uint8_t *parse_and_decrypt(const char *json_payload, size_t expected_len,
+                             size_t *out_len, char **error_json) {
+    *out_len = 0;
+
+    cJSON *doc = cJSON_Parse(json_payload);
+    if (!doc) {
+      *error_json = strdup("{\"error\":\"Invalid JSON\"}");
+      return NULL;
+    }
+
+    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
+    cJSON *blob_item = cJSON_GetObjectItem(doc, "blob");
+
+    const char *client_pub_hex =
+        cJSON_IsString(client_pub_item) ? client_pub_item->valuestring : NULL;
+    const char *blob_hex =
+        cJSON_IsString(blob_item) ? blob_item->valuestring : NULL;
+
+    if (!client_pub_hex || !blob_hex) {
+      cJSON_Delete(doc);
+      *error_json = strdup("{\"error\":\"Missing required fields\"}");
+      return NULL;
+    }
+
+    uint8_t *decrypted =
+        decrypt_ecies_payload(client_pub_hex, blob_hex, out_len, error_json);
+    cJSON_Delete(doc);
+
+    if (!decrypted)
+      return NULL;
+
+    if (*out_len != expected_len) {
+      mbedtls_platform_zeroize(decrypted, *out_len);
+      free(decrypted);
+      *error_json = strdup("{\"error\":\"Invalid payload size\"}");
+      return NULL;
+    }
+
+    return decrypted;
+  }
+
 public:
   ZKAuth() : initialized(false) {
     mbedtls_ecp_group_init(&grp);
@@ -236,13 +283,13 @@ public:
     int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                                     (const unsigned char *)pers, strlen(pers));
     if (ret != 0) {
-      printf("mbedtls_ctr_drbg_seed failed: -0x%04x\n", -ret);
+      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ctr_drbg_seed failed: -0x%04x", -ret);
       return false;
     }
 
     ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
     if (ret != 0) {
-      printf("mbedtls_ecp_group_load failed: -0x%04x\n", -ret);
+      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecp_group_load failed: -0x%04x", -ret);
       return false;
     }
 
@@ -250,7 +297,7 @@ public:
     ret = mbedtls_ecdh_gen_public(&grp, &device_private_d, &device_public_Q,
                                   mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) {
-      printf("mbedtls_ecdh_gen_public failed: -0x%04x\n", -ret);
+      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecdh_gen_public failed: -0x%04x", -ret);
       return false;
     }
 
@@ -259,17 +306,12 @@ public:
         &grp, &device_public_Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen,
         device_public_key, sizeof(device_public_key));
     if (ret != 0 || olen != 65) {
-      printf("mbedtls_ecp_point_write_binary failed: -0x%04x\n", -ret);
+      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecp_point_write_binary failed: -0x%04x", -ret);
       return false;
     }
 
     initialized = true;
-
-    printf("\n=== ZK Authentication Initialized ===\n");
-    printf("Ephemeral Tunnel Key: ");
-    for (int i = 0; i < 65; i++)
-      printf("%02x", device_public_key[i]);
-    printf("\n=====================================\n\n");
+    ESP_LOGI(TAG_ZK_AUTH, "ZK Authentication initialized (ephemeral tunnel key ready)");
 
     return true;
   }
@@ -295,84 +337,51 @@ public:
 
   // Process unlock request with ECIES tunnel.
   // After decryption, password_hash is passed to TEE for key derivation.
-  // The REE never stores the password hash.
   char *process_unlock(const char *json_payload, bool *success_out) {
     *success_out = false;
 
     if (!initialized)
       return strdup("{\"error\":\"Not initialized\"}");
 
-    cJSON *doc = cJSON_Parse(json_payload);
-    if (!doc)
-      return strdup("{\"error\":\"Invalid JSON\"}");
-
-    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
-    cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
-
-    const char *client_pub_hex =
-        cJSON_IsString(client_pub_item) ? client_pub_item->valuestring : NULL;
-    const char *encrypted_blob_hex = cJSON_IsString(encrypted_blob_item)
-                                         ? encrypted_blob_item->valuestring
-                                         : NULL;
-
-    if (!client_pub_hex || !encrypted_blob_hex) {
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Missing required fields\"}");
-    }
-
-    printf("\n=== Processing Unlock Request ===\n");
+    ESP_LOGI(TAG_ZK_AUTH, "Processing unlock request");
 
     size_t plaintext_len = 0;
     char *error_msg = NULL;
-    uint8_t *decrypted = decrypt_ecies_payload(
-        client_pub_hex, encrypted_blob_hex, &plaintext_len, &error_msg);
-    cJSON_Delete(doc);
-
+    uint8_t *decrypted =
+        parse_and_decrypt(json_payload, 32, &plaintext_len, &error_msg);
     if (!decrypted)
       return error_msg;
 
-    if (plaintext_len != 32) {
-      mbedtls_platform_zeroize(decrypted, plaintext_len);
-      free(decrypted);
-      return strdup("{\"error\":\"Invalid payload size\"}");
-    }
-
-    // --- Pass password hash to TEE for key derivation ---
     bool verification_result = false;
 
     if (keystore.derive_and_verify(decrypted)) {
       if (!keystore.has_exchange_key()) {
-        // First activation: store derived public keys in NVS
-        printf("First-time setup: storing derived public keys\n");
+        ESP_LOGI(TAG_ZK_AUTH, "First-time setup: storing derived public keys");
         verification_result = keystore.store_public_keys();
       } else {
-        // Subsequent: verify derived public keys match stored ones
         verification_result = keystore.verify_public_keys();
       }
     }
 
-    // Wipe password_hash from REE immediately
     mbedtls_platform_zeroize(decrypted, 32);
     free(decrypted);
 
     if (verification_result) {
       keystore.activated = true;
+      unlocked = true;
+      ESP_LOGI(TAG_ZK_AUTH, "Password verification successful");
     } else {
       keystore.wipe_secrets();
+      unlocked = false;
+      ESP_LOGW(TAG_ZK_AUTH, "Password verification failed");
     }
 
     cJSON *resp_doc = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_doc, "success", verification_result);
-
-    if (verification_result) {
-      printf("Password verification SUCCESSFUL\n");
-      unlocked = true;
-      cJSON_AddStringToObject(resp_doc, "message", "Unlock successful");
-    } else {
-      printf("Password verification FAILED\n");
-      unlocked = false;
-      cJSON_AddStringToObject(resp_doc, "error", "Invalid password");
-    }
+    cJSON_AddStringToObject(resp_doc,
+                            verification_result ? "message" : "error",
+                            verification_result ? "Unlock successful"
+                                                : "Invalid password");
 
     char *response_str = cJSON_PrintUnformatted(resp_doc);
     cJSON_Delete(resp_doc);
@@ -383,7 +392,6 @@ public:
 
   // Process password change request.
   // Expects ECIES blob containing old_hash(32) + new_hash(32) = 64 bytes.
-  // Passes both to TEE which verifies old and derives from new.
   char *process_change_password(const char *json_payload, bool *success_out) {
     *success_out = false;
 
@@ -392,83 +400,49 @@ public:
     if (!unlocked)
       return strdup("{\"error\":\"Device not unlocked\"}");
 
-    cJSON *doc = cJSON_Parse(json_payload);
-    if (!doc)
-      return strdup("{\"error\":\"Invalid JSON\"}");
-
-    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
-    cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
-
-    const char *client_pub_hex =
-        cJSON_IsString(client_pub_item) ? client_pub_item->valuestring : NULL;
-    const char *encrypted_blob_hex = cJSON_IsString(encrypted_blob_item)
-                                         ? encrypted_blob_item->valuestring
-                                         : NULL;
-
-    if (!client_pub_hex || !encrypted_blob_hex) {
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Missing required fields\"}");
-    }
-
-    printf("\n=== Processing Password Change ===\n");
+    ESP_LOGI(TAG_ZK_AUTH, "Processing password change");
 
     size_t plaintext_len = 0;
     char *error_msg = NULL;
-    uint8_t *decrypted = decrypt_ecies_payload(
-        client_pub_hex, encrypted_blob_hex, &plaintext_len, &error_msg);
-    cJSON_Delete(doc);
-
+    uint8_t *decrypted =
+        parse_and_decrypt(json_payload, 64, &plaintext_len, &error_msg);
     if (!decrypted)
       return error_msg;
 
-    if (plaintext_len != 64) {
-      mbedtls_platform_zeroize(decrypted, plaintext_len);
-      free(decrypted);
-      return strdup("{\"error\":\"Invalid payload size\"}");
-    }
-
-    // First 32 bytes = old password hash, last 32 = new password hash
-    uint8_t *old_hash = decrypted;
-    uint8_t *new_hash = decrypted + 32;
-
-    // Change password via TEE — TEE verifies old, derives new, returns pub keys
-    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * EC_PUBLIC_KEY_SIZE];
-    esp_err_t err = tang_tee_change_password(old_hash, new_hash,
-                                             NUM_EXCHANGE_KEYS, pub_keys_buf);
+    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
+    esp_err_t err = tang_tee_change_password(
+        decrypted, decrypted + 32, NUM_EXCHANGE_KEYS, pub_keys_buf);
 
     mbedtls_platform_zeroize(decrypted, 64);
     free(decrypted);
 
     if (err != ESP_OK) {
-      printf("Password change FAILED: %s\n", esp_err_to_name(err));
-      if (err == ESP_ERR_INVALID_ARG) {
-        return strdup(
-            "{\"success\":false,\"error\":\"Current password incorrect\"}");
-      }
-      return strdup(
-          "{\"success\":false,\"error\":\"Failed to derive new keys\"}");
+      ESP_LOGW(TAG_ZK_AUTH, "Password change failed: %s",
+               esp_err_to_name(err));
+      return strdup(err == ESP_ERR_INVALID_ARG
+                        ? "{\"success\":false,\"error\":\"Current password incorrect\"}"
+                        : "{\"success\":false,\"error\":\"Failed to derive new keys\"}");
     }
 
-    // Update keystore with new public keys from TEE
-    memcpy(keystore.sig_pub, pub_keys_buf, EC_PUBLIC_KEY_SIZE);
+    memcpy(keystore.sig_pub, pub_keys_buf, TEE_EC_PUBLIC_KEY_SIZE);
     keystore.sig_loaded = true;
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      memcpy(keystore.exc_pub[s], pub_keys_buf + (1 + s) * EC_PUBLIC_KEY_SIZE,
-             EC_PUBLIC_KEY_SIZE);
+      memcpy(keystore.exc_pub[s],
+             pub_keys_buf + (1 + s) * TEE_EC_PUBLIC_KEY_SIZE,
+             TEE_EC_PUBLIC_KEY_SIZE);
     }
     keystore.exc_pub_loaded = true;
     keystore.gen = NUM_EXCHANGE_KEYS - 1;
     keystore.activated = true;
 
-    // Store new public keys in NVS
     if (!keystore.store_public_keys()) {
       keystore.wipe_secrets();
-      printf("Password change FAILED: NVS write error\n");
+      ESP_LOGE(TAG_ZK_AUTH, "Password change failed: NVS write error");
       return strdup(
           "{\"success\":false,\"error\":\"Failed to store new keys\"}");
     }
 
-    printf("Password changed successfully — keys rotated\n");
+    ESP_LOGI(TAG_ZK_AUTH, "Password changed successfully");
     *success_out = true;
     return strdup(
         "{\"success\":true,\"message\":\"Password changed and keys rotated\"}");
@@ -476,7 +450,6 @@ public:
 
   // Process key-rotation request.
   // Expects ECIES blob containing password_hash (32 bytes).
-  // Verifies the password against stored keys before rotating.
   char *process_rotate(const char *json_payload, bool *success_out) {
     *success_out = false;
 
@@ -485,61 +458,33 @@ public:
     if (!unlocked)
       return strdup("{\"error\":\"Device not unlocked\"}");
 
-    cJSON *doc = cJSON_Parse(json_payload);
-    if (!doc)
-      return strdup("{\"error\":\"Invalid JSON\"}");
-
-    cJSON *client_pub_item = cJSON_GetObjectItem(doc, "clientPub");
-    cJSON *encrypted_blob_item = cJSON_GetObjectItem(doc, "blob");
-
-    const char *client_pub_hex =
-        cJSON_IsString(client_pub_item) ? client_pub_item->valuestring : NULL;
-    const char *encrypted_blob_hex = cJSON_IsString(encrypted_blob_item)
-                                         ? encrypted_blob_item->valuestring
-                                         : NULL;
-
-    if (!client_pub_hex || !encrypted_blob_hex) {
-      cJSON_Delete(doc);
-      return strdup("{\"error\":\"Missing required fields\"}");
-    }
-
-    printf("\n=== Processing Key Rotation ===\n");
+    ESP_LOGI(TAG_ZK_AUTH, "Processing key rotation");
 
     size_t plaintext_len = 0;
     char *error_msg = NULL;
-    uint8_t *decrypted = decrypt_ecies_payload(
-        client_pub_hex, encrypted_blob_hex, &plaintext_len, &error_msg);
-    cJSON_Delete(doc);
-
+    uint8_t *decrypted =
+        parse_and_decrypt(json_payload, 32, &plaintext_len, &error_msg);
     if (!decrypted)
       return error_msg;
 
-    if (plaintext_len != 32) {
-      mbedtls_platform_zeroize(decrypted, plaintext_len);
-      free(decrypted);
-      return strdup("{\"error\":\"Invalid payload size\"}");
-    }
-
-    // Re-derive keys via TEE and verify against stored public keys
     bool password_ok = false;
-    if (keystore.derive_and_verify(decrypted)) {
+    if (keystore.derive_and_verify(decrypted))
       password_ok = keystore.verify_public_keys();
-    }
 
     mbedtls_platform_zeroize(decrypted, 32);
     free(decrypted);
 
     if (!password_ok) {
-      printf("Key rotation password verification FAILED\n");
+      ESP_LOGW(TAG_ZK_AUTH, "Key rotation password verification failed");
       return strdup("{\"success\":false,\"error\":\"Invalid password\"}");
     }
 
     if (!keystore.rotate()) {
-      printf("Key rotation FAILED\n");
+      ESP_LOGE(TAG_ZK_AUTH, "Key rotation failed");
       return strdup("{\"success\":false,\"error\":\"Rotation failed\"}");
     }
 
-    printf("Key rotation successful — gen %u\n", keystore.gen);
+    ESP_LOGI(TAG_ZK_AUTH, "Key rotation successful — gen %u", keystore.gen);
     *success_out = true;
 
     cJSON *resp = cJSON_CreateObject();

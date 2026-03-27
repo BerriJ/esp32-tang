@@ -5,17 +5,15 @@
 #include <esp_event.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
-#include <esp_task_wdt.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/task.h>
 #include <nvs_flash.h>
-#include <string>
 
 static const char *TAG = "TangServer";
 
-// Core components (order matters — later headers reference earlier ones)
+// Core components
 #include "encoding.h"
 #include "provision.h"
 #include "provision_handlers.h"
