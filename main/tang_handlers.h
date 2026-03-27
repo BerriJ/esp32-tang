@@ -19,7 +19,7 @@ extern TangKeyStore keystore;
 extern bool unlocked;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
-// Advertises only the newest exchange key (gen, at slot gen%3).
+// Advertises only the newest exchange key (gen, at slot gen%NUM_EXCHANGE_KEYS).
 // Requires activation since signing key is derived on-demand.
 static esp_err_t handle_adv(httpd_req_t *req) {
   if (!keystore.sig_loaded || !keystore.exc_pub_loaded || !keystore.activated) {
@@ -298,12 +298,12 @@ static bool compute_exchange_key_thumbprint(int s, char *out_buf,
 }
 
 // 404 handler - Route /rec/{kid} to perform_rec after matching kid
-// against all 3 active exchange key generations.
+// against all active exchange key generations.
 static esp_err_t handle_not_found(httpd_req_t *req, httpd_err_code_t err) {
   if (req->method == HTTP_POST && strncmp(req->uri, "/rec/", 5) == 0) {
     const char *request_kid = req->uri + 5;
 
-    // Try all 3 active generations: gen, gen-1, gen-2
+    // Try all active generations: gen, gen-1, ... gen-(NUM_EXCHANGE_KEYS-1)
     for (int offset = 0; offset < NUM_EXCHANGE_KEYS; offset++) {
       unsigned int g = keystore.gen - offset;
       int s = TangKeyStore::slot(g);

@@ -9,10 +9,11 @@
 #include <mbedtls/platform_util.h>
 #include <nvs.h>
 #include <nvs_flash.h>
+#include <sdkconfig.h>
 
 static const char *TAG_STORAGE = "tang_storage";
 
-const int NUM_EXCHANGE_KEYS = 3;
+const int NUM_EXCHANGE_KEYS = CONFIG_NUM_EXCHANGE_KEYS;
 
 class TangKeyStore {
 public:
@@ -20,13 +21,15 @@ public:
   uint8_t sig_pub[P256_PUBLIC_KEY_SIZE];
   bool sig_loaded;
 
-  // Exchange public keys stored in 3 slots (ring buffer indexed by gen % 3)
+  // Exchange public keys stored in NUM_EXCHANGE_KEYS slots (ring buffer indexed
+  // by gen % NUM_EXCHANGE_KEYS)
   uint8_t exc_pub[NUM_EXCHANGE_KEYS][P256_PUBLIC_KEY_SIZE];
   bool exc_pub_loaded;
 
   // Generation counter (monotonically increasing, newest key).
-  // Active keys are: gen, gen-1, gen-2.  Slot = generation % 3.
-  // Starts at 2 so first activation produces 3 keys (gens 0, 1, 2).
+  // Active keys are: gen, gen-1, ... gen-(NUM_EXCHANGE_KEYS-1).
+  // Slot = generation % NUM_EXCHANGE_KEYS.
+  // Starts at NUM_EXCHANGE_KEYS-1 so first activation produces all keys.
   unsigned int gen;
 
   // Password hash kept in RAM after activation (PBKDF2 output from browser)
@@ -34,7 +37,8 @@ public:
   bool activated;
 
   TangKeyStore()
-      : sig_loaded(false), exc_pub_loaded(false), gen(2), activated(false) {
+      : sig_loaded(false), exc_pub_loaded(false),
+        gen(NUM_EXCHANGE_KEYS - 1), activated(false) {
     memset(sig_pub, 0, sizeof(sig_pub));
     memset(exc_pub, 0, sizeof(exc_pub));
     memset(password_hash, 0, sizeof(password_hash));
@@ -47,8 +51,9 @@ public:
 
   // NVS key name for a slot
   static const char *exc_pub_nvs_key(int s) {
-    static const char *keys[] = {"exc_pub_0", "exc_pub_1", "exc_pub_2"};
-    return keys[s];
+    static char buf[16];
+    snprintf(buf, sizeof(buf), "exc_pub_%d", s);
+    return buf;
   }
 
   // Check if public keys exist in NVS (i.e. device was activated before)
@@ -152,7 +157,7 @@ public:
     }
     sig_loaded = true;
 
-    // Derive 3 active exchange keys: gen, gen-1, gen-2
+    // Derive all active exchange keys: gen, gen-1, ... gen-(NUM_EXCHANGE_KEYS-1)
     for (int offset = 0; offset < NUM_EXCHANGE_KEYS; offset++) {
       unsigned int g = gen - offset;
       int s = slot(g);
@@ -200,8 +205,8 @@ public:
     nvs_close(handle);
 
     if (ok)
-      ESP_LOGI(TAG_STORAGE, "Public keys stored in NVS (gen %u, keys %u/%u/%u)",
-               gen, gen, gen - 1, gen - 2);
+      ESP_LOGI(TAG_STORAGE, "Public keys stored in NVS (gen %u, %d active keys)",
+               gen, NUM_EXCHANGE_KEYS);
     return ok;
   }
 
@@ -225,7 +230,7 @@ public:
       return false;
     }
 
-    // Verify all 3 exchange key slots
+    // Verify all exchange key slots
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
       len = P256_PUBLIC_KEY_SIZE;
       if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
@@ -279,15 +284,16 @@ public:
       }
     }
 
-    uint32_t stored_gen = 2;
+    uint32_t stored_gen = NUM_EXCHANGE_KEYS - 1;
     if (nvs_get_u32(handle, "gen", &stored_gen) == ESP_OK) {
       gen = (unsigned int)stored_gen;
     }
 
     nvs_close(handle);
     exc_pub_loaded = true;
-    ESP_LOGI(TAG_STORAGE, "Exchange public keys loaded (gen %u, keys %u/%u/%u)",
-             gen, gen, gen - 1, gen - 2);
+    ESP_LOGI(TAG_STORAGE,
+             "Exchange public keys loaded (gen %u, %d active keys)", gen,
+             NUM_EXCHANGE_KEYS);
     return true;
   }
 
@@ -326,11 +332,11 @@ public:
     nvs_close(handle);
 
     if (ok) {
-      unsigned int dropped = gen - 2;
+      unsigned int dropped = gen - (NUM_EXCHANGE_KEYS - 1);
       gen = new_gen;
       ESP_LOGI(TAG_STORAGE,
-               "Rotated: gen %u (dropped %u, active %u/%u/%u)", gen, dropped,
-               gen, gen - 1, gen - 2);
+               "Rotated: gen %u (dropped %u, %d active keys)", gen, dropped,
+               NUM_EXCHANGE_KEYS);
     }
     return ok;
   }

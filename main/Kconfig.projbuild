@@ -13,3 +13,17 @@ config WIFI_PASSWORD
         Password for the Wi-Fi network.
 
 endmenu
+
+menu "Tang Server"
+
+config NUM_EXCHANGE_KEYS
+    int "Number of active exchange keys"
+    default 3
+    range 1 16
+    help
+        Number of active exchange key generations to keep.
+        Keys are stored in a ring buffer and rotated.
+        Higher values allow clients with older keys to
+        still recover, at the cost of more NVS storage.
+
+endmenu
