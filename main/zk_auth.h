@@ -6,6 +6,7 @@
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_mac.h>
+#include <esp_random.h>
 #include <esp_system.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/ctr_drbg.h>
@@ -293,9 +294,22 @@ public:
       return false;
     }
 
-    // Generate ephemeral tunnel keypair (fresh each boot)
-    ret = mbedtls_ecdh_gen_public(&grp, &device_private_d, &device_public_Q,
-                                  mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (!regenerate_tunnel_key()) {
+      return false;
+    }
+
+    initialized = true;
+    ESP_LOGI(TAG_ZK_AUTH,
+             "ZK Authentication initialized (ephemeral tunnel key ready)");
+
+    return true;
+  }
+
+  // Generate a fresh ephemeral ECDH keypair for the ECIES tunnel.
+  // Called at init and after every use to provide forward secrecy.
+  bool regenerate_tunnel_key() {
+    int ret = mbedtls_ecdh_gen_public(&grp, &device_private_d, &device_public_Q,
+                                      mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) {
       ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecdh_gen_public failed: -0x%04x", -ret);
       return false;
@@ -306,12 +320,10 @@ public:
         &grp, &device_public_Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen,
         device_public_key, sizeof(device_public_key));
     if (ret != 0 || olen != 65) {
-      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecp_point_write_binary failed: -0x%04x", -ret);
+      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecp_point_write_binary failed: -0x%04x",
+               -ret);
       return false;
     }
-
-    initialized = true;
-    ESP_LOGI(TAG_ZK_AUTH, "ZK Authentication initialized (ephemeral tunnel key ready)");
 
     return true;
   }
@@ -353,9 +365,21 @@ public:
       return error_msg;
 
     bool verification_result = false;
+    bool first_setup = !keystore.has_exchange_key();
+
+    // Load or generate KDF salt for forward secrecy
+    if (first_setup) {
+      keystore.generate_kdf_salt();
+    } else if (!keystore.load_kdf_salt()) {
+      mbedtls_platform_zeroize(decrypted, 32);
+      free(decrypted);
+      ESP_LOGE(TAG_ZK_AUTH, "KDF salt missing from NVS");
+      return strdup("{\"error\":\"KDF salt missing — device may need "
+                    "re-initialization\"}");
+    }
 
     if (keystore.derive_and_verify(decrypted)) {
-      if (!keystore.has_exchange_key()) {
+      if (first_setup) {
         ESP_LOGI(TAG_ZK_AUTH, "First-time setup: storing derived public keys");
         verification_result = keystore.store_public_keys();
       } else {
@@ -378,13 +402,15 @@ public:
 
     cJSON *resp_doc = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp_doc, "success", verification_result);
-    cJSON_AddStringToObject(resp_doc,
-                            verification_result ? "message" : "error",
+    cJSON_AddStringToObject(resp_doc, verification_result ? "message" : "error",
                             verification_result ? "Unlock successful"
                                                 : "Invalid password");
 
     char *response_str = cJSON_PrintUnformatted(resp_doc);
     cJSON_Delete(resp_doc);
+
+    // Rotate tunnel key so the old private key can't decrypt future sessions
+    regenerate_tunnel_key();
 
     *success_out = verification_result;
     return response_str;
@@ -409,20 +435,46 @@ public:
     if (!decrypted)
       return error_msg;
 
-    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
-    esp_err_t err = tang_tee_change_password(
-        decrypted, decrypted + 32, NUM_EXCHANGE_KEYS, pub_keys_buf);
+    // Load old salt for verification, generate new salt for forward secrecy
+    if (!keystore.load_kdf_salt()) {
+      mbedtls_platform_zeroize(decrypted, 64);
+      free(decrypted);
+      ESP_LOGE(TAG_ZK_AUTH, "KDF salt missing from NVS");
+      return strdup("{\"success\":false,\"error\":\"KDF salt missing\"}");
+    }
 
+    // Build 64-byte keying materials: password_hash(32) || kdf_salt(32)
+    uint8_t old_keying[64], new_keying[64];
+    memcpy(old_keying, decrypted, 32);
+    memcpy(old_keying + 32, keystore.kdf_salt, 32);
+
+    uint8_t new_salt[32];
+    esp_fill_random(new_salt, sizeof(new_salt));
+    memcpy(new_keying, decrypted + 32, 32);
+    memcpy(new_keying + 32, new_salt, 32);
+
+    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
+    esp_err_t err = tang_tee_change_password(old_keying, new_keying,
+                                             NUM_EXCHANGE_KEYS, pub_keys_buf);
+
+    mbedtls_platform_zeroize(old_keying, sizeof(old_keying));
+    mbedtls_platform_zeroize(new_keying, sizeof(new_keying));
     mbedtls_platform_zeroize(decrypted, 64);
     free(decrypted);
 
     if (err != ESP_OK) {
-      ESP_LOGW(TAG_ZK_AUTH, "Password change failed: %s",
-               esp_err_to_name(err));
-      return strdup(err == ESP_ERR_INVALID_ARG
-                        ? "{\"success\":false,\"error\":\"Current password incorrect\"}"
-                        : "{\"success\":false,\"error\":\"Failed to derive new keys\"}");
+      mbedtls_platform_zeroize(new_salt, sizeof(new_salt));
+      ESP_LOGW(TAG_ZK_AUTH, "Password change failed: %s", esp_err_to_name(err));
+      return strdup(
+          err == ESP_ERR_INVALID_ARG
+              ? "{\"success\":false,\"error\":\"Current password incorrect\"}"
+              : "{\"success\":false,\"error\":\"Failed to derive new keys\"}");
     }
+
+    // Update the salt to the newly generated one
+    memcpy(keystore.kdf_salt, new_salt, 32);
+    keystore.kdf_salt_loaded = true;
+    mbedtls_platform_zeroize(new_salt, sizeof(new_salt));
 
     memcpy(keystore.sig_pub, pub_keys_buf, TEE_EC_PUBLIC_KEY_SIZE);
     keystore.sig_loaded = true;
@@ -443,6 +495,7 @@ public:
     }
 
     ESP_LOGI(TAG_ZK_AUTH, "Password changed successfully");
+    regenerate_tunnel_key();
     *success_out = true;
     return strdup(
         "{\"success\":true,\"message\":\"Password changed and keys rotated\"}");
@@ -467,6 +520,13 @@ public:
     if (!decrypted)
       return error_msg;
 
+    // Ensure KDF salt is available (should be from unlock, but verify)
+    if (!keystore.kdf_salt_loaded && !keystore.load_kdf_salt()) {
+      mbedtls_platform_zeroize(decrypted, 32);
+      free(decrypted);
+      return strdup("{\"success\":false,\"error\":\"KDF salt missing\"}");
+    }
+
     bool password_ok = false;
     if (keystore.derive_and_verify(decrypted))
       password_ok = keystore.verify_public_keys();
@@ -485,6 +545,7 @@ public:
     }
 
     ESP_LOGI(TAG_ZK_AUTH, "Key rotation successful — gen %u", keystore.gen);
+    regenerate_tunnel_key();
     *success_out = true;
 
     cJSON *resp = cJSON_CreateObject();

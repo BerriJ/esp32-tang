@@ -4,6 +4,7 @@
 #include "tang_tee_service.h"
 #include <cstring>
 #include <esp_log.h>
+#include <esp_random.h>
 extern "C" {
 #include <mbedtls/constant_time.h>
 }
@@ -33,13 +34,20 @@ public:
   // Starts at NUM_EXCHANGE_KEYS-1 so first activation produces all keys.
   unsigned int gen;
 
+  // Random salt mixed into master key derivation for forward secrecy.
+  // Generated on first setup and regenerated on every password change.
+  // Ensures that reverting to a previous password still yields fresh keys.
+  uint8_t kdf_salt[32];
+  bool kdf_salt_loaded;
+
   bool activated;
 
   TangKeyStore()
       : sig_loaded(false), exc_pub_loaded(false), gen(NUM_EXCHANGE_KEYS - 1),
-        activated(false) {
+        kdf_salt_loaded(false), activated(false) {
     memset(sig_pub, 0, sizeof(sig_pub));
     memset(exc_pub, 0, sizeof(exc_pub));
+    memset(kdf_salt, 0, sizeof(kdf_salt));
   }
 
   // Slot index for a given generation number
@@ -82,13 +90,20 @@ public:
   }
 
   // Derive all keys via TEE, compute public keys.
-  // password_hash is passed to the TEE and immediately forgotten by REE.
+  // password_hash is combined with kdf_salt to form 64-byte keying material,
+  // then passed to the TEE and immediately forgotten by REE.
   bool derive_and_verify(const uint8_t *password_hash) {
+    // Build keying material: password_hash(32) || kdf_salt(32)
+    uint8_t keying[64];
+    memcpy(keying, password_hash, 32);
+    memcpy(keying + 32, kdf_salt, 32);
+
     // Buffer for all public keys: signing + NUM_EXCHANGE_KEYS exchange keys
     uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
 
     esp_err_t err =
-        tang_tee_activate(password_hash, gen, NUM_EXCHANGE_KEYS, pub_keys_buf);
+        tang_tee_activate(keying, gen, NUM_EXCHANGE_KEYS, pub_keys_buf);
+    mbedtls_platform_zeroize(keying, sizeof(keying));
     if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "TEE activation failed: %s", esp_err_to_name(err));
       sig_loaded = false;
@@ -110,7 +125,32 @@ public:
     return true;
   }
 
-  // Store all public keys + gen counter to NVS
+  // Generate a fresh random KDF salt (for first setup or password change)
+  void generate_kdf_salt() {
+    esp_fill_random(kdf_salt, sizeof(kdf_salt));
+    kdf_salt_loaded = true;
+    ESP_LOGI(TAG_STORAGE, "Generated new KDF salt for forward secrecy");
+  }
+
+  // Load KDF salt from NVS
+  bool load_kdf_salt() {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
+    if (err != ESP_OK)
+      return false;
+
+    size_t len = sizeof(kdf_salt);
+    err = nvs_get_blob(handle, "kdf_salt", kdf_salt, &len);
+    nvs_close(handle);
+
+    if (err == ESP_OK && len == sizeof(kdf_salt)) {
+      kdf_salt_loaded = true;
+      return true;
+    }
+    return false;
+  }
+
+  // Store all public keys + gen counter + KDF salt to NVS
   bool store_public_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
@@ -118,8 +158,8 @@ public:
       return false;
 
     bool ok = true;
-    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub, TEE_EC_PUBLIC_KEY_SIZE) ==
-                ESP_OK);
+    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub,
+                             TEE_EC_PUBLIC_KEY_SIZE) == ESP_OK);
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
       ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
@@ -127,6 +167,9 @@ public:
     }
 
     ok = ok && (nvs_set_u32(handle, "gen", (uint32_t)gen) == ESP_OK);
+
+    ok = ok && (nvs_set_blob(handle, "kdf_salt", kdf_salt, sizeof(kdf_salt)) ==
+                ESP_OK);
 
     if (ok)
       ok = (nvs_commit(handle) == ESP_OK);

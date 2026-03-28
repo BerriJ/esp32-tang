@@ -52,8 +52,9 @@ On each power-on the device executes these steps (in `setup()`):
    sets read/write protections. This is a **one-time, irreversible** operation.
 3. **Load signing public key** from NVS (if previously stored).
 4. **Load exchange public keys** and generation counter from NVS.
-5. **Initialize ZKAuth** — generate a fresh ephemeral ECDH tunnel keypair
-   (P-256) for the ECIES channel. This keypair is **per-boot** and not persisted.
+5. **Initialize ZKAuth** — generate the first ephemeral ECDH tunnel keypair
+   (P-256) for the ECIES channel. The keypair is regenerated after every use
+   (unlock, password change, key rotation) and is never persisted.
 6. **Start WiFi + HTTP server** — register all route handlers.
 
 After boot the server will refuse both `/adv` and `/rec` requests until the
@@ -74,7 +75,7 @@ User Password (plaintext, browser-only)
   ├─ PBKDF2-HMAC-SHA256(password, MAC-address, 10 000 iterations)
   │    → password_hash (32 bytes, sent to device via ECIES tunnel)
   │
-  └─ [Inside TEE] HMAC-SHA256(eFuse KEY5, password_hash)
+  └─ [Inside TEE] HMAC-SHA256(eFuse KEY5, password_hash || kdf_salt)
        → master_key (32 bytes, TEE-only, never exported)
        │
        ├─ HKDF-Expand: HMAC-SHA256(master_key, "tang-signing-key" || 0x01)
@@ -87,6 +88,11 @@ User Password (plaintext, browser-only)
        │
        └─ (one exchange key per active generation)
 ```
+
+The `kdf_salt` is a random 32-byte value stored in NVS. It is generated on
+first setup and regenerated on every password change, providing **forward
+secrecy**: even if the same password is reused, the derived keys will be
+completely different because the salt has changed.
 
 ### 1. PBKDF2 Password Hash (Client Side)
 
@@ -109,9 +115,12 @@ Inside the TEE, the master key is derived using the **hardware HMAC peripheral**
 tied to the one-time-programmable eFuse KEY5:
 
 ```
-master_key = HMAC-SHA256(eFuse_KEY5, password_hash)
+master_key = HMAC-SHA256(eFuse_KEY5, password_hash || kdf_salt)
 ```
 
+- The `kdf_salt` is a random 32-byte value stored in NVS, regenerated on every
+  password change. This ensures that reverting to a previous password still
+  produces completely different derived keys (**forward secrecy**).
 - The eFuse KEY5 is **read-protected**: even the TEE firmware cannot read the
   raw key bytes; it can only invoke the HMAC peripheral.
 - The master key exists only in TEE SRAM and is wiped on lock or reboot.
@@ -171,13 +180,14 @@ hardware HMAC peripheral (`esp_hmac_calculate()`).
 
 The `tang-server` NVS namespace stores **public keys only**:
 
-| NVS Key     | Type | Size | Description                     |
-| ----------- | ---- | ---- | ------------------------------- |
-| `sig_pub`   | blob | 64 B | Signing public key (x ∥ y)      |
-| `exc_pub_0` | blob | 64 B | Exchange public key, slot 0     |
-| `exc_pub_1` | blob | 64 B | Exchange public key, slot 1     |
-| …           | …    | …    | … up to `NUM_EXCHANGE_KEYS - 1` |
-| `gen`       | u32  | 4 B  | Current generation counter      |
+| NVS Key     | Type | Size | Description                       |
+| ----------- | ---- | ---- | --------------------------------- |
+| `sig_pub`   | blob | 64 B | Signing public key (x ∥ y)        |
+| `exc_pub_0` | blob | 64 B | Exchange public key, slot 0       |
+| `exc_pub_1` | blob | 64 B | Exchange public key, slot 1       |
+| …           | …    | …    | … up to `NUM_EXCHANGE_KEYS - 1`   |
+| `gen`       | u32  | 4 B  | Current generation counter        |
+| `kdf_salt`  | blob | 32 B | Random KDF salt (forward secrecy) |
 
 Public keys are loaded at boot for `/adv` responses and are updated when keys
 are rotated or the password is changed.
@@ -201,8 +211,9 @@ To protect the PBKDF2 hash in transit (the device does not use TLS), the web
 interface establishes an **ECIES** (Elliptic Curve Integrated Encryption Scheme)
 tunnel to the device:
 
-1. **Device** generates an ephemeral P-256 keypair on each boot and serves the
-   public key at `GET /api/identity`.
+1. **Device** generates an ephemeral P-256 keypair and serves the public key
+   at `GET /api/identity`. The keypair is regenerated after every use (not just
+   at boot), so each operation gets a unique tunnel key.
 2. **Browser** generates its own ephemeral P-256 keypair and computes:
    ```
    shared_secret = ECDH(client_priv, device_pub)   // x-coordinate only
@@ -217,6 +228,8 @@ tunnel to the device:
 5. **Device** (REE) performs the reverse ECDH + Encrypt-then-MAC verification
    to recover the 32-byte `password_hash`, passes it to the TEE, then
    immediately zeroizes it from REE memory.
+6. **Device** regenerates the ephemeral tunnel keypair so the old private key
+   cannot be used to decrypt any future (or replayed) ECIES blobs.
 
 ---
 
@@ -331,5 +344,6 @@ clients that encrypted to old exchange keys will no longer be able to recover.
 - **Wrong passwords are detectable.** A wrong password produces a different
   master key, which produces different public keys that fail to match the ones
   stored in NVS.
-- **Ephemeral tunnel keys** change on every boot, providing forward secrecy
-  for the password transport channel.
+- **Ephemeral tunnel keys** are regenerated after every use (not just at
+  boot), providing per-operation forward secrecy for the password transport
+  channel. Capturing a blob is useless once the tunnel key has rotated.

@@ -182,15 +182,19 @@ static int derive_exchange_key(uint32_t generation, uint8_t *priv_out) {
  * pub_keys_out layout: [sig_pub(64)] [exc_pub_0(64)] ... [exc_pub_N(64)]
  * where exc_pub slots are ordered by gen, gen-1, ... gen-(num_keys-1)
  * mapped to their ring buffer slots.
+ *
+ * @param keying_material  64 bytes: password_hash(32) || kdf_salt(32)
+ *                         The kdf_salt ensures forward secrecy — same
+ *                         password with different salt yields different keys.
  */
-esp_err_t _ss_tang_tee_activate(const uint8_t *password_hash, uint32_t gen,
+esp_err_t _ss_tang_tee_activate(const uint8_t *keying_material, uint32_t gen,
                                 uint32_t nkeys, uint8_t *pub_keys_out) {
-  if (!password_hash || !pub_keys_out || nkeys == 0)
+  if (!keying_material || !pub_keys_out || nkeys == 0)
     return ESP_ERR_INVALID_ARG;
 
-  /* Derive master_key = HMAC(eFuse KEY5, password_hash) */
+  /* Derive master_key = HMAC(eFuse KEY5, password_hash || kdf_salt) */
   esp_err_t err =
-      esp_hmac_calculate(HMAC_KEY5, password_hash, 32, master_key);
+      esp_hmac_calculate(HMAC_KEY5, keying_material, 64, master_key);
   if (err != ESP_OK)
     return err;
 
@@ -381,19 +385,22 @@ esp_err_t _ss_tang_tee_lock(void) {
 
 /**
  * SS 205: Change password — verify old, derive new, return new public keys.
+ *
+ * @param old_keying  64 bytes: old_password_hash(32) || old_kdf_salt(32)
+ * @param new_keying  64 bytes: new_password_hash(32) || new_kdf_salt(32)
  */
-esp_err_t _ss_tang_tee_change_password(const uint8_t *old_hash,
-                                       const uint8_t *new_hash,
+esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
+                                       const uint8_t *new_keying,
                                        uint32_t nkeys,
                                        uint8_t *pub_keys_out) {
   if (!activated)
     return ESP_ERR_INVALID_STATE;
-  if (!old_hash || !new_hash || !pub_keys_out || nkeys == 0)
+  if (!old_keying || !new_keying || !pub_keys_out || nkeys == 0)
     return ESP_ERR_INVALID_ARG;
 
-  /* Verify old password: derive master from old_hash and compare */
+  /* Verify old password: derive master from old keying material and compare */
   uint8_t test_master[32];
-  esp_err_t err = esp_hmac_calculate(HMAC_KEY5, old_hash, 32, test_master);
+  esp_err_t err = esp_hmac_calculate(HMAC_KEY5, old_keying, 64, test_master);
   if (err != ESP_OK) {
     mbedtls_platform_zeroize(test_master, sizeof(test_master));
     return err;
@@ -408,8 +415,8 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_hash,
   if (diff != 0)
     return ESP_ERR_INVALID_ARG; /* wrong old password */
 
-  /* Derive new master_key from new_hash */
-  err = esp_hmac_calculate(HMAC_KEY5, new_hash, 32, master_key);
+  /* Derive new master_key from new keying material (includes new salt) */
+  err = esp_hmac_calculate(HMAC_KEY5, new_keying, 64, master_key);
   if (err != ESP_OK)
     return err;
 

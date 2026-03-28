@@ -22,22 +22,25 @@ extern "C" {
 #define TEE_EFUSE_STATUS_WRONG_PURPOSE 2
 
 /**
- * Activate the TEE with a password hash.
- * Derives master_key via hardware HMAC(eFuse KEY5, password_hash),
+ * Activate the TEE with keying material.
+ * Derives master_key via hardware HMAC(eFuse KEY5, keying_material),
  * then derives signing + exchange keys, computes public keys.
  *
- * @param password_hash  32-byte PBKDF2 output from browser
+ * @param keying_material  64-byte buffer: password_hash(32) || kdf_salt(32)
+ *                         The kdf_salt provides forward secrecy — same password
+ *                         with a different salt yields completely different
+ * keys.
  * @param gen            Current generation counter
  * @param num_keys       Number of exchange keys (NUM_EXCHANGE_KEYS)
  * @param pub_keys_out   Output buffer: [sig_pub(64)] [exc_pub_0(64)] ...
  * [exc_pub_N(64)] Must be at least (1 + num_keys) * 64 bytes
  * @return ESP_OK on success
  */
-static inline esp_err_t tang_tee_activate(const uint8_t *password_hash,
+static inline esp_err_t tang_tee_activate(const uint8_t *keying_material,
                                           uint32_t gen, uint32_t num_keys,
                                           uint8_t *pub_keys_out) {
-  return (esp_err_t)esp_tee_service_call(5, SS_TANG_TEE_ACTIVATE, password_hash,
-                                         gen, num_keys, pub_keys_out);
+  return (esp_err_t)esp_tee_service_call(
+      5, SS_TANG_TEE_ACTIVATE, keying_material, gen, num_keys, pub_keys_out);
 }
 
 /**
@@ -95,18 +98,18 @@ static inline esp_err_t tang_tee_lock(void) {
 /**
  * Change password: verify old, derive new keys, return new public keys.
  *
- * @param old_hash      Old password hash (32 bytes)
- * @param new_hash      New password hash (32 bytes)
+ * @param old_keying    Old keying material: password_hash(32) || kdf_salt(32)
+ * @param new_keying    New keying material: password_hash(32) || kdf_salt(32)
  * @param num_keys      Number of exchange keys
  * @param pub_keys_out  Output buffer: same layout as tang_tee_activate
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if old password is wrong
  */
-static inline esp_err_t tang_tee_change_password(const uint8_t *old_hash,
-                                                 const uint8_t *new_hash,
+static inline esp_err_t tang_tee_change_password(const uint8_t *old_keying,
+                                                 const uint8_t *new_keying,
                                                  uint32_t num_keys,
                                                  uint8_t *pub_keys_out) {
   return (esp_err_t)esp_tee_service_call(5, SS_TANG_TEE_CHANGE_PASSWORD,
-                                         old_hash, new_hash, num_keys,
+                                         old_keying, new_keying, num_keys,
                                          pub_keys_out);
 }
 
