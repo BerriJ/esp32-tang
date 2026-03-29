@@ -61,3 +61,7 @@ components/json_generator
 
 # Other Binary files
 *.pdf
+
+*secure_boot_signing_key.pem
+tee_sec_stg_hmac.bin
+tee_pbkdf2_hmac.bin
