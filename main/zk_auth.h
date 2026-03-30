@@ -4,6 +4,8 @@
 #include "tang_storage.h"
 #include "tang_tee_service.h"
 #include <cJSON.h>
+#include <esp_efuse.h>
+#include <esp_efuse_table.h>
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_random.h>
@@ -328,19 +330,20 @@ public:
     return true;
   }
 
-  // Return ephemeral tunnel public key + MAC address for the browser
+  // Return ephemeral tunnel public key + eFuse UID (PBKDF2 salt) for the
+  // browser
   char *get_identity_json() {
     char pubkey_hex[131]; // 65 bytes * 2 + null
     bin_to_hex(device_public_key, 65, pubkey_hex);
 
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char mac_hex[13];
-    bin_to_hex(mac, 6, mac_hex);
+    uint8_t uid[16];
+    esp_efuse_read_field_blob(ESP_EFUSE_OPTIONAL_UNIQUE_ID, uid, 128);
+    char uid_hex[33]; // 16 bytes * 2 + null
+    bin_to_hex(uid, 16, uid_hex);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "pubKey", pubkey_hex);
-    cJSON_AddStringToObject(root, "macAddress", mac_hex);
+    cJSON_AddStringToObject(root, "salt", uid_hex);
 
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

@@ -645,9 +645,9 @@ async function performSecureUnlock() {
         
         // Step 1: Derive session key using PBKDF2
         // PBKDF2-HMAC-SHA256 with 600000 iterations (OWASP 2023 minimum for SHA-256)
-        // Use MAC address as salt (received from device identity)
-        const macBytes = hexToBytes(deviceIdentity.macAddress);
-        const salt = byteArrayToWordArray(macBytes);
+        // Use eFuse Unique ID as salt (128-bit, factory-burned, not network-observable)
+        const saltBytes = hexToBytes(deviceIdentity.salt);
+        const salt = byteArrayToWordArray(saltBytes);
         sessionKeyHash = CryptoJS.PBKDF2(password, salt, {
             keySize: 256/32,  // 256 bits = 8 words
             iterations: 600000,
@@ -662,7 +662,7 @@ async function performSecureUnlock() {
         
         // ⚠️ PRODUCTION WARNING: Remove console.log statements in production builds
         // These logs expose sensitive cryptographic material
-        console.log('Salt (MAC Address):', deviceIdentity.macAddress);
+        console.log('Salt (eFuse UID):', deviceIdentity.salt);
         console.log('Session Key (PBKDF2):', sessionKeyHex);
         
         showStatus('Establishing ECIES tunnel...', 'info', true);
@@ -1026,8 +1026,8 @@ async function performRotate() {
 
         showRotateStatus('Deriving key...', 'info', true);
 
-        const macBytes = hexToBytes(deviceIdentity.macAddress);
-        const salt = byteArrayToWordArray(macBytes);
+        const saltBytes = hexToBytes(deviceIdentity.salt);
+        const salt = byteArrayToWordArray(saltBytes);
 
         keyHash = CryptoJS.PBKDF2(pw, salt, {
             keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
@@ -1088,8 +1088,8 @@ async function performPasswordChange() {
 
         showChangeStatus('Deriving keys...', 'info', true);
 
-        const macBytes = hexToBytes(deviceIdentity.macAddress);
-        const salt = byteArrayToWordArray(macBytes);
+        const saltBytes = hexToBytes(deviceIdentity.salt);
+        const salt = byteArrayToWordArray(saltBytes);
 
         oldKeyHash = CryptoJS.PBKDF2(currentPw, salt, {
             keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256

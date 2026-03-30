@@ -48,9 +48,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/zk_web_page.h` (script tags for crypto-js and elliptic.js)
 - Impact: CDN compromise → injected JS → password exfiltration. There are no Subresource Integrity hashes.
 
-**V9. MAC address as PBKDF2 salt is weak**
-- Files: `main/zk_web_page.h` (PBKDF2 salt = MAC), `main/zk_auth.h` (get_identity_json)
-- Impact: MAC addresses are only 6 bytes, predictable, and often known. A dedicated attacker could pre-compute rainbow tables per-MAC. Should use a proper 16+ byte random salt.
+**V9. ~~MAC address as PBKDF2 salt is weak~~ FIXED**
+- **Status: Replaced with eFuse Unique ID (128-bit, factory-burned, not network-observable).**
+- Files: `main/zk_web_page.h` (PBKDF2 salt), `main/zk_auth.h` (get_identity_json)
+- ~~Impact: MAC addresses are only 6 bytes, predictable, and often known. A dedicated attacker could pre-compute rainbow tables per-MAC.~~
 
 **V10. ~~TEE Secure Storage in development mode~~ FIXED**
 - **Status: TEE Secure Storage has been activated.**
@@ -199,10 +200,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Modify: all handlers in `provision_handlers.h` and `zk_handlers.h`
 - Fixes: V7
 
-**Step 3.5: Use stronger PBKDF2 salt**
-- Generate a random 16-byte salt on first boot, store in NVS alongside `kdf_salt`
-- Serve this PBKDF2 salt via `/api/identity` instead of using MAC address
-- Modify: `main/zk_auth.h` (get_identity_json), `main/zk_web_page.h` (JavaScript)
+**Step 3.5: ~~Use stronger PBKDF2 salt~~ DONE**
+- ✅ Replaced MAC address with eFuse Unique ID (128-bit) as PBKDF2 salt.
+- Served via `/api/identity` `salt` field; no NVS storage needed (read from eFuse).
 - Fixes: V9
 
 **Step 3.6: Add Content-Security-Policy headers**
@@ -273,7 +273,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | 9        | Restrict CORS                            | V7   | Trivial | Yes              |
 | ~~10~~   | ~~Disable JTAG~~ ✅                       | V11  | —       | Done (automatic) |
 | ~~11~~   | ~~TEE Secure Storage~~ ✅                 | V10  | —       | Done             |
-| 12       | Stronger PBKDF2 salt                     | V9   | Low     | Yes (breaking)   |
+| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅               | V9   | —       | Done (breaking)  |
 | 13       | Add CSP headers                          | V12  | Trivial | Yes              |
 | 14       | Increase DPA protection                  | V14  | Trivial | Yes              |
 | 15       | WiFi backoff                             | V17  | Low     | Yes              |
