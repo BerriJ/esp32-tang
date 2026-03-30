@@ -19,9 +19,9 @@ extern bool unlocked;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
 // Advertises only the newest exchange key (gen, at slot gen%NUM_EXCHANGE_KEYS).
-// Requires activation since signing is done via TEE.
+// Signing key lives in TEE Secure Storage — available without unlock.
 static esp_err_t handle_adv(httpd_req_t *req) {
-  if (!keystore.sig_loaded || !keystore.exc_pub_loaded || !keystore.activated) {
+  if (!keystore.sig_loaded || !keystore.exc_pub_loaded) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_sendstr(req, "Server not configured");
     return ESP_FAIL;
@@ -35,8 +35,8 @@ static esp_err_t handle_adv(httpd_req_t *req) {
 
   b64url_encode_buf(&keystore.sig_pub[0], TEE_EC_COORDINATE_SIZE, sig_x_b64,
                     sizeof(sig_x_b64));
-  b64url_encode_buf(&keystore.sig_pub[TEE_EC_COORDINATE_SIZE], TEE_EC_COORDINATE_SIZE,
-                    sig_y_b64, sizeof(sig_y_b64));
+  b64url_encode_buf(&keystore.sig_pub[TEE_EC_COORDINATE_SIZE],
+                    TEE_EC_COORDINATE_SIZE, sig_y_b64, sizeof(sig_y_b64));
   b64url_encode_buf(&keystore.exc_pub[adv_slot][0], TEE_EC_COORDINATE_SIZE,
                     rec_x_b64, sizeof(rec_x_b64));
   b64url_encode_buf(&keystore.exc_pub[adv_slot][TEE_EC_COORDINATE_SIZE],
@@ -108,9 +108,14 @@ static esp_err_t handle_adv(httpd_req_t *req) {
                  0);
   free(signing_input);
 
-  // Sign via TEE — private key never leaves the TEE
+  // Sign via TEE Secure Storage — private key never leaves the TEE
   uint8_t signature[TEE_EC_SIGNATURE_SIZE]; // r(32) + s(32)
-  esp_err_t sign_err = tang_tee_sign(hash, sizeof(hash), signature);
+  tee_sec_stg_key_cfg_t sign_cfg = {.id = "tang-sig",
+                                    .type = TEE_SEC_STG_KEY_ECDSA_SECP256R1,
+                                    .flags = TEE_SEC_STG_FLAG_NONE};
+  tee_sec_stg_ecdsa_sign_t sign_out;
+  esp_err_t sign_err =
+      tee_sec_stg_ecdsa_sign(&sign_cfg, hash, sizeof(hash), &sign_out);
 
   if (sign_err != ESP_OK) {
     ESP_LOGE(TAG_HANDLERS, "TEE signing failed: %s", esp_err_to_name(sign_err));
@@ -119,6 +124,10 @@ static esp_err_t handle_adv(httpd_req_t *req) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Signing failed");
     return ESP_FAIL;
   }
+
+  memcpy(signature, sign_out.sign_r, TEE_EC_COORDINATE_SIZE);
+  memcpy(signature + TEE_EC_COORDINATE_SIZE, sign_out.sign_s,
+         TEE_EC_COORDINATE_SIZE);
 
   char sig_b64[96] = {0};
   b64url_encode_buf(signature, sizeof(signature), sig_b64, sizeof(sig_b64));
@@ -216,8 +225,8 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
 
   b64url_encode_buf(&shared_point[0], TEE_EC_COORDINATE_SIZE, shared_x_b64,
                     sizeof(shared_x_b64));
-  b64url_encode_buf(&shared_point[TEE_EC_COORDINATE_SIZE], TEE_EC_COORDINATE_SIZE,
-                    shared_y_b64, sizeof(shared_y_b64));
+  b64url_encode_buf(&shared_point[TEE_EC_COORDINATE_SIZE],
+                    TEE_EC_COORDINATE_SIZE, shared_y_b64, sizeof(shared_y_b64));
 
   cJSON *resp_root = cJSON_CreateObject();
   cJSON_AddStringToObject(resp_root, "alg", "ECMR");

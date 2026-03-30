@@ -453,7 +453,7 @@ public:
     memcpy(new_keying, decrypted + 32, 32);
     memcpy(new_keying + 32, new_salt, 32);
 
-    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
+    uint8_t pub_keys_buf[NUM_EXCHANGE_KEYS * TEE_EC_PUBLIC_KEY_SIZE];
     esp_err_t err = tang_tee_change_password(old_keying, new_keying,
                                              NUM_EXCHANGE_KEYS, pub_keys_buf);
 
@@ -476,11 +476,8 @@ public:
     keystore.kdf_salt_loaded = true;
     mbedtls_platform_zeroize(new_salt, sizeof(new_salt));
 
-    memcpy(keystore.sig_pub, pub_keys_buf, TEE_EC_PUBLIC_KEY_SIZE);
-    keystore.sig_loaded = true;
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      memcpy(keystore.exc_pub[s],
-             pub_keys_buf + (1 + s) * TEE_EC_PUBLIC_KEY_SIZE,
+      memcpy(keystore.exc_pub[s], pub_keys_buf + s * TEE_EC_PUBLIC_KEY_SIZE,
              TEE_EC_PUBLIC_KEY_SIZE);
     }
     keystore.exc_pub_loaded = true;

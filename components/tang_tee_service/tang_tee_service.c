@@ -223,13 +223,6 @@ static int compute_public_key(const uint8_t *priv, uint8_t *pub) {
   return ret;
 }
 
-/* Derive signing key from master_key */
-static int derive_signing_key(uint8_t *priv_out) {
-  const char *info = "tang-signing-key";
-  return derive_ec_private_key(master_key, (const uint8_t *)info, strlen(info),
-                               priv_out);
-}
-
 /* Derive exchange key for a generation from master_key */
 static int derive_exchange_key(uint32_t generation, uint8_t *priv_out) {
   char info[32];
@@ -244,11 +237,13 @@ static int derive_exchange_key(uint32_t generation, uint8_t *priv_out) {
 /* ------------------------------------------------------------------ */
 
 /**
- * SS 200: Activate — derive master_key, compute all public keys.
+ * SS 200: Activate — derive master_key, compute all exchange public keys.
  *
- * pub_keys_out layout: [sig_pub(64)] [exc_pub_0(64)] ... [exc_pub_N(64)]
+ * pub_keys_out layout: [exc_pub_0(64)] ... [exc_pub_N(64)]
  * where exc_pub slots are ordered by gen, gen-1, ... gen-(num_keys-1)
  * mapped to their ring buffer slots.
+ *
+ * Signing key is no longer password-derived — it lives in TEE Secure Storage.
  *
  * @param keying_material  64 bytes: password_hash(32) || kdf_salt(32)
  *                         The kdf_salt ensures forward secrecy — same
@@ -267,36 +262,20 @@ esp_err_t _ss_tang_tee_activate(const uint8_t *keying_material, uint32_t gen,
   current_gen = gen;
   num_exchange_keys = nkeys;
 
-  /* Derive and output signing public key (first 64 bytes) */
-  uint8_t priv[EC_PRIV_SIZE];
-  int ret = derive_signing_key(priv);
-  if (ret != 0) {
-    mbedtls_platform_zeroize(priv, sizeof(priv));
-    mbedtls_platform_zeroize(master_key, sizeof(master_key));
-    return ESP_FAIL;
-  }
-
-  ret = compute_public_key(priv, pub_keys_out);
-  mbedtls_platform_zeroize(priv, sizeof(priv));
-  if (ret != 0) {
-    mbedtls_platform_zeroize(master_key, sizeof(master_key));
-    return ESP_FAIL;
-  }
-
   /* Derive and output exchange public keys */
+  uint8_t priv[EC_PRIV_SIZE];
   for (uint32_t offset = 0; offset < nkeys; offset++) {
     uint32_t g = gen - offset;
     uint32_t s = g % nkeys;
 
-    ret = derive_exchange_key(g, priv);
+    int ret = derive_exchange_key(g, priv);
     if (ret != 0) {
       mbedtls_platform_zeroize(priv, sizeof(priv));
       mbedtls_platform_zeroize(master_key, sizeof(master_key));
       return ESP_FAIL;
     }
 
-    /* Exchange keys start after the signing key: offset (1 + slot) * 64 */
-    ret = compute_public_key(priv, pub_keys_out + (1 + s) * EC_PUB_SIZE);
+    ret = compute_public_key(priv, pub_keys_out + s * EC_PUB_SIZE);
     mbedtls_platform_zeroize(priv, sizeof(priv));
     if (ret != 0) {
       mbedtls_platform_zeroize(master_key, sizeof(master_key));
@@ -306,53 +285,6 @@ esp_err_t _ss_tang_tee_activate(const uint8_t *keying_material, uint32_t gen,
 
   activated = true;
   return ESP_OK;
-}
-
-/**
- * SS 201: Sign a hash with the signing key (ECDSA P-256).
- * signature_out = r(32) || s(32)
- */
-esp_err_t _ss_tang_tee_sign(const uint8_t *hash, uint32_t hash_len,
-                            uint8_t *signature_out) {
-  if (!activated)
-    return ESP_ERR_INVALID_STATE;
-  if (!hash || !signature_out || hash_len == 0)
-    return ESP_ERR_INVALID_ARG;
-
-  uint8_t priv[EC_PRIV_SIZE];
-  int ret = derive_signing_key(priv);
-  if (ret != 0) {
-    mbedtls_platform_zeroize(priv, sizeof(priv));
-    return ESP_FAIL;
-  }
-
-  mbedtls_ecp_group grp;
-  mbedtls_mpi d, r, s;
-
-  mbedtls_ecp_group_init(&grp);
-  mbedtls_mpi_init(&d);
-  mbedtls_mpi_init(&r);
-  mbedtls_mpi_init(&s);
-
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-  if (ret == 0)
-    ret = mbedtls_mpi_read_binary(&d, priv, EC_PRIV_SIZE);
-  mbedtls_platform_zeroize(priv, sizeof(priv));
-
-  if (ret == 0)
-    ret = mbedtls_ecdsa_sign(&grp, &r, &s, &d, hash, hash_len, tee_rng, NULL);
-  if (ret == 0)
-    ret = mbedtls_mpi_write_binary(&r, signature_out, EC_COORD_SIZE);
-  if (ret == 0)
-    ret = mbedtls_mpi_write_binary(&s, signature_out + EC_COORD_SIZE,
-                                   EC_COORD_SIZE);
-
-  mbedtls_ecp_group_free(&grp);
-  mbedtls_mpi_free(&d);
-  mbedtls_mpi_free(&r);
-  mbedtls_mpi_free(&s);
-
-  return (ret == 0) ? ESP_OK : ESP_FAIL;
 }
 
 /**
@@ -490,30 +422,19 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
   current_gen = nkeys - 1;
   num_exchange_keys = nkeys;
 
-  /* Derive all new public keys (same layout as activate) */
+  /* Derive all new exchange public keys (signing key is in TEE Secure Storage) */
   uint8_t priv[EC_PRIV_SIZE];
-  int ret = derive_signing_key(priv);
-  if (ret != 0) {
-    mbedtls_platform_zeroize(priv, sizeof(priv));
-    return ESP_FAIL;
-  }
-
-  ret = compute_public_key(priv, pub_keys_out);
-  mbedtls_platform_zeroize(priv, sizeof(priv));
-  if (ret != 0)
-    return ESP_FAIL;
-
   for (uint32_t offset = 0; offset < nkeys; offset++) {
     uint32_t g = current_gen - offset;
     uint32_t s = g % nkeys;
 
-    ret = derive_exchange_key(g, priv);
+    int ret = derive_exchange_key(g, priv);
     if (ret != 0) {
       mbedtls_platform_zeroize(priv, sizeof(priv));
       return ESP_FAIL;
     }
 
-    ret = compute_public_key(priv, pub_keys_out + (1 + s) * EC_PUB_SIZE);
+    ret = compute_public_key(priv, pub_keys_out + s * EC_PUB_SIZE);
     mbedtls_platform_zeroize(priv, sizeof(priv));
     if (ret != 0)
       return ESP_FAIL;

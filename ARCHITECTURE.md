@@ -50,26 +50,38 @@ On each power-on the device executes these steps (in `setup()`):
 2. **eFuse KEY5 provisioning** — if KEY5 is unused, the TEE generates a random
    256-bit HMAC key, burns it into eFuse block KEY5 with purpose `HMAC_UP`, and
    sets read/write protections. This is a **one-time, irreversible** operation.
-3. **Load signing public key** from NVS (if previously stored).
+3. **Initialize signing key** — on first boot the TEE Secure Storage generates
+   a random P-256 signing key (persisted encrypted in flash, `WRITE_ONCE`).
+   The signing public key is loaded into REE memory.
 4. **Load exchange public keys** and generation counter from NVS.
 5. **Initialize ZKAuth** — generate the first ephemeral ECDH tunnel keypair
    (P-256) for the ECIES channel. The keypair is regenerated after every use
    (unlock, password change, key rotation) and is never persisted.
 6. **Start WiFi + HTTP server** — register all route handlers.
 
-After boot the server will refuse both `/adv` and `/rec` requests until the
-device is unlocked with the correct password. `/adv` requires activation because
-the response is a signed JWS (ES256), and the signing private key only exists in
-TEE SRAM after the password-based master key derivation.
+After boot the server serves `/adv` immediately (the signing key is always
+available in TEE Secure Storage). `/rec` requests are refused until the device
+is unlocked with the correct password, because ECDH requires exchange private
+keys that only exist in TEE SRAM after master key derivation.
 
 ---
 
 ## Key Hierarchy
 
-The system has a three-level key hierarchy. Each level is derived deterministically
-from the one above, enabling password-based recovery of all keys.
+The system uses two independent key hierarchies:
+
+1. **Signing key** — a random P-256 key generated once and persisted in TEE
+   Secure Storage. It is independent of the password.
+2. **Exchange keys** — derived deterministically from the password, enabling
+   password-based recovery.
 
 ```
+┌─ TEE Secure Storage (encrypted flash, WRITE_ONCE) ─────────────┐
+│  Random P-256 signing key (generated on first boot)             │
+│    → signing public key = d × G                                 │
+│    → signs /adv JWS (ES256)                                     │
+└─────────────────────────────────────────────────────────────────┘
+
 User Password (plaintext, browser-only)
   │
   ├─ PBKDF2-HMAC-SHA256(password, MAC-address, 10 000 iterations)
@@ -77,10 +89,6 @@ User Password (plaintext, browser-only)
   │
   └─ [Inside TEE] HMAC-SHA256(eFuse KEY5, password_hash || kdf_salt)
        → master_key (32 bytes, TEE-only, never exported)
-       │
-       ├─ HKDF-Expand: HMAC-SHA256(master_key, "tang-signing-key" || 0x01)
-       │    → signing private key (P-256 scalar, 32 bytes)
-       │    → signing public key = d × G
        │
        ├─ HKDF-Expand: HMAC-SHA256(master_key, "tang-exchange-key-{gen}" || 0x01)
        │    → exchange private key for generation {gen} (P-256 scalar)
@@ -129,18 +137,20 @@ master_key = HMAC-SHA256(eFuse_KEY5, password_hash || kdf_salt)
 
 ### 3. Signing Key (ECDSA P-256)
 
-Derived from the master key via a single-step HKDF-Expand:
-
-```
-signing_priv = HMAC-SHA256(master_key, "tang-signing-key" || 0x01)
-```
+The signing key is a **random** P-256 key generated on first boot and stored in
+TEE Secure Storage (ESP-TEE `esp_tee_sec_storage` API, key ID `"tang-sig"`).
 
 - **Curve**: NIST P-256 (secp256r1)
 - **Purpose**: signs the `/adv` JWS response (ES256) so clients can verify
   authenticity of the advertised key set.
-- **Lifetime**: stable as long as the password doesn't change. A password
-  change re-derives all keys.
-- The private key never leaves the TEE. Signing is performed by `tang_tee_sign()`.
+- **Lifetime**: permanent — survives reboots, lock/unlock cycles, and password
+  changes. Generated once per device.
+- **Storage**: encrypted in flash by the TEE Secure Storage subsystem,
+  inaccessible to REE. The `WRITE_ONCE` flag prevents overwriting.
+- **Independence**: completely decoupled from the password hierarchy. A password
+  change does **not** affect the signing key.
+- The private key never leaves the TEE. Signing is performed via
+  `esp_tee_sec_storage_ecdsa_sign()`.
 
 ### 4. Exchange Keys (ECDH P-256, Generational)
 
@@ -182,15 +192,15 @@ The `tang-server` NVS namespace stores **public keys only**:
 
 | NVS Key     | Type | Size | Description                       |
 | ----------- | ---- | ---- | --------------------------------- |
-| `sig_pub`   | blob | 64 B | Signing public key (x ∥ y)        |
 | `exc_pub_0` | blob | 64 B | Exchange public key, slot 0       |
 | `exc_pub_1` | blob | 64 B | Exchange public key, slot 1       |
 | …           | …    | …    | … up to `NUM_EXCHANGE_KEYS - 1`   |
 | `gen`       | u32  | 4 B  | Current generation counter        |
 | `kdf_salt`  | blob | 32 B | Random KDF salt (forward secrecy) |
 
-Public keys are loaded at boot for `/adv` responses and are updated when keys
-are rotated or the password is changed.
+Exchange public keys are loaded at boot for `/adv` responses and are updated
+when keys are rotated or the password is changed. The signing public key is
+loaded directly from TEE Secure Storage (not NVS).
 
 ### TEE SRAM (Volatile)
 
@@ -200,8 +210,18 @@ The TEE maintains in-memory state that is lost on reboot or lock:
 - `activated` flag
 - `current_gen`, `num_exchange_keys`
 
-Private keys are **never stored**; they are re-derived from `master_key` on
-every sign/ECDH/rotate operation and immediately wiped.
+Exchange private keys are **never stored**; they are re-derived from
+`master_key` on every ECDH/rotate operation and immediately wiped.
+
+### TEE Secure Storage (Persistent, Encrypted)
+
+The signing key is stored in the TEE Secure Storage subsystem, which persists
+keys in encrypted flash using a device-specific encryption key. Unlike TEE SRAM,
+this data survives reboots and lock/unlock cycles.
+
+| Key ID       | Type        | Flags        | Description          |
+| ------------ | ----------- | ------------ | -------------------- |
+| `"tang-sig"` | ECDSA P-256 | `WRITE_ONCE` | Tang JWS signing key |
 
 ---
 
@@ -262,7 +282,8 @@ is provided, the newest generation is used.
 
 ## Password Change
 
-A password change re-derives the entire key hierarchy:
+A password change re-derives the exchange key hierarchy (the signing key is
+unaffected):
 
 1. Browser computes `old_hash` and `new_hash` (both PBKDF2) and sends both
    in a single 64-byte ECIES blob to `POST /api/change-password`.
@@ -270,12 +291,13 @@ A password change re-derives the entire key hierarchy:
    (constant-time comparison). If it fails, the request is rejected.
 3. TEE derives `new_master_key = HMAC(eFuse KEY5, new_hash)` and replaces the
    old master key.
-4. All signing and exchange keys are re-derived from the new master key;
+4. All exchange keys are re-derived from the new master key;
    the generation counter resets to `NUM_EXCHANGE_KEYS - 1`.
-5. New public keys are stored in NVS, replacing the old ones.
+5. New exchange public keys are stored in NVS, replacing the old ones.
 
 **Important**: a password change invalidates all existing client bindings —
 clients that encrypted to old exchange keys will no longer be able to recover.
+The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable.
 
 ---
 
@@ -320,9 +342,10 @@ clients that encrypted to old exchange keys will no longer be able to recover.
 ┌──────────────▼───────────────────────────────┐
 │  ESP32 TEE (M-mode, hardware-isolated)       │
 │  • master_key (SRAM, volatile)               │
-│  • Private key derivation + sign + ECDH      │
+│  • Signing key (Secure Storage, persistent)  │
+│  • Exchange key derivation + ECDH            │
 │  • eFuse KEY5 HMAC peripheral                │
-│  • Keys wiped on lock / reboot               │
+│  • Exchange keys wiped on lock / reboot      │
 └──────────────────────────────────────────────┘
                │ Hardware HMAC
 ┌──────────────▼───────────────────────────────┐
@@ -335,7 +358,9 @@ clients that encrypted to old exchange keys will no longer be able to recover.
 ### Key Guarantees
 
 - **Private keys never leave the TEE.** Sign and ECDH operations are performed
-  entirely in TEE SRAM; only public keys and signatures are returned.
+  entirely within the TEE; only public keys and signatures are returned. The
+  signing key is in TEE Secure Storage; exchange keys are derived on-demand in
+  TEE SRAM.
 - **The password never leaves the browser.** Only a salted PBKDF2 derivative
   is transmitted, and only under ECIES encryption.
 - **The eFuse key is hardware-protected.** Even a full firmware compromise

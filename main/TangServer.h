@@ -167,13 +167,13 @@ void setup() {
                   "HMAC key derivation will not work");
   }
 
-  // 3. Load signing public key if available (for reference before activation)
-  if (keystore.has_signing_key()) {
-    if (keystore.load_signing_pub()) {
-      ESP_LOGI(TAG, "Signing public key loaded");
-    }
+  // 3. Initialize signing key in TEE Secure Storage (first boot generates,
+  //    subsequent boots are a no-op). Then load the public key.
+  keystore.init_signing_key();
+  if (keystore.load_signing_pub_from_tee()) {
+    ESP_LOGI(TAG, "Signing public key loaded");
   } else {
-    ESP_LOGI(TAG, "No signing key yet — will be created on first password");
+    ESP_LOGW(TAG, "Failed to load signing public key from TEE");
   }
 
   // 4. Load exchange public keys if available (for /adv before activation)

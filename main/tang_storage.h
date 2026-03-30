@@ -76,48 +76,69 @@ public:
     return found;
   }
 
-  bool has_signing_key() {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
-    if (err != ESP_OK)
-      return false;
-
-    size_t len = 0;
-    err = nvs_get_blob(handle, "sig_pub", nullptr, &len);
-    bool found = (err == ESP_OK && len == TEE_EC_PUBLIC_KEY_SIZE);
-    nvs_close(handle);
-    return found;
+  // Generate the stable signing key in TEE Secure Storage (first boot only).
+  // Idempotent — silently succeeds if the key already exists.
+  bool init_signing_key() {
+    tee_sec_stg_key_cfg_t cfg = {.id = "tang-sig",
+                                 .type = TEE_SEC_STG_KEY_ECDSA_SECP256R1,
+                                 .flags = TEE_SEC_STG_FLAG_WRITE_ONCE};
+    esp_err_t err = tee_sec_stg_gen_key(&cfg);
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG_STORAGE, "Signing key generated in TEE Secure Storage");
+      return true;
+    }
+    // Key already exists — treat as success
+    ESP_LOGI(TAG_STORAGE, "Signing key already in TEE Secure Storage (err=%s)",
+             esp_err_to_name(err));
+    return true;
   }
 
-  // Derive all keys via TEE, compute public keys.
+  // Load signing public key from TEE Secure Storage
+  bool load_signing_pub_from_tee() {
+    tee_sec_stg_key_cfg_t cfg = {.id = "tang-sig",
+                                 .type = TEE_SEC_STG_KEY_ECDSA_SECP256R1,
+                                 .flags = TEE_SEC_STG_FLAG_NONE};
+    tee_sec_stg_ecdsa_pubkey_t pubkey;
+    esp_err_t err = tee_sec_stg_ecdsa_get_pubkey(&cfg, &pubkey);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG_STORAGE, "Failed to load signing pubkey from TEE: %s",
+               esp_err_to_name(err));
+      sig_loaded = false;
+      return false;
+    }
+    memcpy(sig_pub, pubkey.pub_x, TEE_EC_COORDINATE_SIZE);
+    memcpy(sig_pub + TEE_EC_COORDINATE_SIZE, pubkey.pub_y,
+           TEE_EC_COORDINATE_SIZE);
+    sig_loaded = true;
+    ESP_LOGI(TAG_STORAGE, "Signing public key loaded from TEE Secure Storage");
+    return true;
+  }
+
+  // Derive exchange keys via TEE, compute public keys.
   // password_hash is combined with kdf_salt to form 64-byte keying material,
   // then passed to the TEE and immediately forgotten by REE.
+  // Signing key is not involved — it lives in TEE Secure Storage.
   bool derive_and_verify(const uint8_t *password_hash) {
     // Build keying material: password_hash(32) || kdf_salt(32)
     uint8_t keying[64];
     memcpy(keying, password_hash, 32);
     memcpy(keying + 32, kdf_salt, 32);
 
-    // Buffer for all public keys: signing + NUM_EXCHANGE_KEYS exchange keys
-    uint8_t pub_keys_buf[(1 + NUM_EXCHANGE_KEYS) * TEE_EC_PUBLIC_KEY_SIZE];
+    // Buffer for exchange public keys only
+    uint8_t pub_keys_buf[NUM_EXCHANGE_KEYS * TEE_EC_PUBLIC_KEY_SIZE];
 
     esp_err_t err =
         tang_tee_activate(keying, gen, NUM_EXCHANGE_KEYS, pub_keys_buf);
     mbedtls_platform_zeroize(keying, sizeof(keying));
     if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "TEE activation failed: %s", esp_err_to_name(err));
-      sig_loaded = false;
       exc_pub_loaded = false;
       return false;
     }
 
-    // Copy signing public key (first 64 bytes)
-    memcpy(sig_pub, pub_keys_buf, TEE_EC_PUBLIC_KEY_SIZE);
-    sig_loaded = true;
-
     // Copy exchange public keys (64 bytes each, indexed by slot)
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
-      memcpy(exc_pub[s], pub_keys_buf + (1 + s) * TEE_EC_PUBLIC_KEY_SIZE,
+      memcpy(exc_pub[s], pub_keys_buf + s * TEE_EC_PUBLIC_KEY_SIZE,
              TEE_EC_PUBLIC_KEY_SIZE);
     }
     exc_pub_loaded = true;
@@ -150,7 +171,8 @@ public:
     return false;
   }
 
-  // Store all public keys + gen counter + KDF salt to NVS
+  // Store exchange public keys + gen counter + KDF salt to NVS.
+  // Signing public key is not stored here — it lives in TEE Secure Storage.
   bool store_public_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READWRITE, &handle);
@@ -158,8 +180,6 @@ public:
       return false;
 
     bool ok = true;
-    ok = ok && (nvs_set_blob(handle, "sig_pub", sig_pub,
-                             TEE_EC_PUBLIC_KEY_SIZE) == ESP_OK);
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
       ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
@@ -183,21 +203,16 @@ public:
     return ok;
   }
 
-  // Verify that derived public keys match the ones stored in NVS.
+  // Verify that derived exchange public keys match the ones stored in NVS.
   bool verify_public_keys() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
     if (err != ESP_OK)
       return false;
 
-    // Verify signing key (constant-time comparison)
     uint8_t stored[TEE_EC_PUBLIC_KEY_SIZE];
-    size_t len = TEE_EC_PUBLIC_KEY_SIZE;
+    size_t len;
     bool mismatch = false;
-    if (nvs_get_blob(handle, "sig_pub", stored, &len) != ESP_OK ||
-        mbedtls_ct_memcmp(sig_pub, stored, TEE_EC_PUBLIC_KEY_SIZE) != 0) {
-      mismatch = true;
-    }
 
     // Verify all exchange key slots (constant-time comparison)
     for (int s = 0; s < NUM_EXCHANGE_KEYS && !mismatch; s++) {
@@ -211,34 +226,15 @@ public:
     if (mismatch) {
       nvs_close(handle);
       ESP_LOGW(TAG_STORAGE,
-               "Public key mismatch — wrong password or wrong device");
-      sig_loaded = false;
+               "Exchange key mismatch — wrong password or wrong device");
       exc_pub_loaded = false;
       return false;
     }
 
     nvs_close(handle);
     ESP_LOGI(TAG_STORAGE,
-             "All derived public keys match NVS — password verified");
+             "All derived exchange keys match NVS — password verified");
     return true;
-  }
-
-  // Load signing public key from NVS (for reference before activation)
-  bool load_signing_pub() {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
-    if (err != ESP_OK)
-      return false;
-
-    size_t len = TEE_EC_PUBLIC_KEY_SIZE;
-    err = nvs_get_blob(handle, "sig_pub", sig_pub, &len);
-    nvs_close(handle);
-
-    if (err == ESP_OK && len == TEE_EC_PUBLIC_KEY_SIZE) {
-      ESP_LOGI(TAG_STORAGE, "Signing public key loaded from NVS");
-      return true;
-    }
-    return false;
   }
 
   // Load all exchange public keys and generation counter from NVS

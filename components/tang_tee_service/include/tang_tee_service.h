@@ -21,19 +21,76 @@ extern "C" {
 #define TEE_EFUSE_STATUS_PROVISIONED 1
 #define TEE_EFUSE_STATUS_WRONG_PURPOSE 2
 
+/* --- TEE Secure Storage types (mirrors esp_tee_sec_storage.h) --- */
+
+typedef enum {
+  TEE_SEC_STG_KEY_AES256 = 0,
+  TEE_SEC_STG_KEY_ECDSA_SECP256R1 = 1,
+  TEE_SEC_STG_KEY_ECDSA_SECP192R1 = 2,
+} tee_sec_stg_key_type_t;
+
+#define TEE_SEC_STG_FLAG_NONE 0
+#define TEE_SEC_STG_FLAG_WRITE_ONCE (1 << 0)
+
+typedef struct {
+  const char *id;
+  tee_sec_stg_key_type_t type;
+  uint32_t flags;
+} tee_sec_stg_key_cfg_t;
+
+typedef struct {
+  uint8_t pub_x[TEE_EC_COORDINATE_SIZE];
+  uint8_t pub_y[TEE_EC_COORDINATE_SIZE];
+} __attribute__((__packed__)) tee_sec_stg_ecdsa_pubkey_t;
+
+typedef struct {
+  uint8_t sign_r[TEE_EC_COORDINATE_SIZE];
+  uint8_t sign_s[TEE_EC_COORDINATE_SIZE];
+} __attribute__((__packed__)) tee_sec_stg_ecdsa_sign_t;
+
+/* --- TEE Secure Storage wrappers (framework services) --- */
+
+/**
+ * Generate an ECDSA P-256 key and store it in TEE Secure Storage.
+ * Idempotent with WRITE_ONCE — returns success-ish if key already exists.
+ */
+static inline esp_err_t tee_sec_stg_gen_key(const tee_sec_stg_key_cfg_t *cfg) {
+  return (esp_err_t)esp_tee_service_call(2, SS_ESP_TEE_SEC_STORAGE_GEN_KEY,
+                                         cfg);
+}
+
+/**
+ * Sign a hash with a key stored in TEE Secure Storage (ECDSA P-256).
+ */
+static inline esp_err_t
+tee_sec_stg_ecdsa_sign(const tee_sec_stg_key_cfg_t *cfg, const uint8_t *hash,
+                       size_t hlen, tee_sec_stg_ecdsa_sign_t *out_sign) {
+  return (esp_err_t)esp_tee_service_call(5, SS_ESP_TEE_SEC_STORAGE_ECDSA_SIGN,
+                                         cfg, hash, hlen, out_sign);
+}
+
+/**
+ * Get the public key of an ECDSA key stored in TEE Secure Storage.
+ */
+static inline esp_err_t
+tee_sec_stg_ecdsa_get_pubkey(const tee_sec_stg_key_cfg_t *cfg,
+                             tee_sec_stg_ecdsa_pubkey_t *out_pubkey) {
+  return (esp_err_t)esp_tee_service_call(
+      3, SS_ESP_TEE_SEC_STORAGE_ECDSA_GET_PUBKEY, cfg, out_pubkey);
+}
+
+/* --- Tang custom TEE services --- */
+
 /**
  * Activate the TEE with keying material.
  * Derives master_key via hardware HMAC(eFuse KEY5, keying_material),
- * then derives signing + exchange keys, computes public keys.
+ * then derives exchange keys and computes public keys.
  *
  * @param keying_material  64-byte buffer: password_hash(32) || kdf_salt(32)
- *                         The kdf_salt provides forward secrecy — same password
- *                         with a different salt yields completely different
- * keys.
  * @param gen            Current generation counter
  * @param num_keys       Number of exchange keys (NUM_EXCHANGE_KEYS)
- * @param pub_keys_out   Output buffer: [sig_pub(64)] [exc_pub_0(64)] ...
- * [exc_pub_N(64)] Must be at least (1 + num_keys) * 64 bytes
+ * @param pub_keys_out   Output buffer: [exc_pub_0(64)] ... [exc_pub_N(64)]
+ *                       Must be at least num_keys * 64 bytes
  * @return ESP_OK on success
  */
 static inline esp_err_t tang_tee_activate(const uint8_t *keying_material,
@@ -41,20 +98,6 @@ static inline esp_err_t tang_tee_activate(const uint8_t *keying_material,
                                           uint8_t *pub_keys_out) {
   return (esp_err_t)esp_tee_service_call(
       5, SS_TANG_TEE_ACTIVATE, keying_material, gen, num_keys, pub_keys_out);
-}
-
-/**
- * Sign a hash with the TEE-stored signing key (ECDSA P-256).
- *
- * @param hash           Hash to sign
- * @param hash_len       Length of hash (32 for SHA-256)
- * @param signature_out  Output buffer for r||s signature (64 bytes)
- * @return ESP_OK on success
- */
-static inline esp_err_t tang_tee_sign(const uint8_t *hash, uint32_t hash_len,
-                                      uint8_t *signature_out) {
-  return (esp_err_t)esp_tee_service_call(4, SS_TANG_TEE_SIGN, hash, hash_len,
-                                         signature_out);
 }
 
 /**
@@ -96,12 +139,14 @@ static inline esp_err_t tang_tee_lock(void) {
 }
 
 /**
- * Change password: verify old, derive new keys, return new public keys.
+ * Change password: verify old, derive new exchange keys, return new public
+ * keys.
  *
  * @param old_keying    Old keying material: password_hash(32) || kdf_salt(32)
  * @param new_keying    New keying material: password_hash(32) || kdf_salt(32)
  * @param num_keys      Number of exchange keys
- * @param pub_keys_out  Output buffer: same layout as tang_tee_activate
+ * @param pub_keys_out  Output buffer: [exc_pub_0(64)] ... [exc_pub_N(64)]
+ *                      Must be at least num_keys * 64 bytes
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if old password is wrong
  */
 static inline esp_err_t tang_tee_change_password(const uint8_t *old_keying,
