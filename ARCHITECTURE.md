@@ -62,8 +62,9 @@ On each power-on the device executes these steps (in `setup()`):
 
 After boot the server serves `/adv` immediately (the signing key is always
 available in TEE Secure Storage). `/rec` requests are refused until the device
-is unlocked with the correct password, because ECDH requires exchange private
-keys that only exist in TEE SRAM after master key derivation.
+is unlocked with the correct password. Exchange private keys are persisted in
+TEE Secure Storage (encrypted NVS), but the TEE requires a successful password
+verification (via `activate`) before it will perform ECDH operations.
 
 ---
 
@@ -146,9 +147,12 @@ zeroized immediately after use.
   secret that an attacker must compromise to derive the master key.
 - The eFuse KEY5 is **read-protected**: even the TEE firmware cannot read the
   raw key bytes; it can only invoke the HMAC peripheral.
-- The master key exists only in TEE SRAM and is wiped on lock or reboot.
+- The master key exists only on the TEE stack during activate, rotate, and
+  change-password operations. It is never stored in static/global memory and
+  is zeroized before the service call returns.
 - A wrong password produces a different master key, which produces different
-  public keys that don't match NVS — the device rejects the attempt.
+  exchange keys that don't match the private keys stored in TEE NVS — the
+  TEE rejects the attempt with `ESP_ERR_INVALID_ARG`.
 
 ### 3. Signing Key (ECDSA P-256)
 
@@ -182,7 +186,15 @@ exchange_priv[gen] = HMAC-SHA256(master_key, "tang-exchange-key-{gen}" || 0x01)
 - **Algorithm tag**: `ECMR` (Elliptic Curve McRae — the Tang recovery algorithm).
 - **Generation counter**: monotonically increasing integer. The device keeps
   `NUM_EXCHANGE_KEYS` (default 3) active generations in a ring buffer.
-- Private keys are re-derived on demand inside the TEE; they are never stored.
+- **Storage**: exchange private keys are persisted in TEE Secure Storage
+  (encrypted NVS partition `secure_storage`, namespace `tang_keys`, keys
+  `exc_0` through `exc_N` by slot index). They are derived on first activation
+  and read from flash on each subsequent ECDH/rotate operation — never cached
+  in TEE RAM.
+- **Password verification**: on subsequent activations (after reboot), the TEE
+  re-derives the exchange key for the current generation from the provided
+  keying material and performs a constant-time comparison with the stored
+  private key. A mismatch means wrong password.
 
 ---
 
@@ -219,26 +231,38 @@ loaded directly from TEE Secure Storage (not NVS).
 
 ### TEE SRAM (Volatile)
 
-The TEE maintains in-memory state that is lost on reboot or lock:
+The TEE maintains minimal in-memory state that is lost on reboot or lock:
 
-- `master_key[32]` — derived from eFuse + password hash
 - `activated` flag
 - `current_gen`, `num_exchange_keys`
 
-Exchange private keys are **never stored**; they are re-derived from
-`master_key` on every ECDH/rotate operation and immediately wiped.
+The master key is **never stored in static/global memory**. It is derived on
+the stack during activate, rotate, and change-password operations and zeroized
+before the function returns. Exchange private keys are read from TEE NVS
+(see below) per ECDH/rotate operation and immediately wiped from the stack.
 
 ### TEE NVS (Persistent, TEE-Only)
 
-The TEE has its own NVS namespace (`tang-server`), inaccessible to the REE:
+The TEE uses the `secure_storage` NVS partition (encrypted by eFuse KEY3),
+with two namespaces:
+
+**Namespace `tang_keys`** — exchange private keys and TEE salt:
 
 | NVS Key    | Type | Size | Description                                   |
 | ---------- | ---- | ---- | --------------------------------------------- |
 | `tee_salt` | blob | 32 B | Random TEE-side salt (generated at provision) |
+| `exc_0`    | blob | 32 B | Exchange private key, slot 0                  |
+| `exc_1`    | blob | 32 B | Exchange private key, slot 1                  |
+| …          | …    | …    | … up to `NUM_EXCHANGE_KEYS - 1`               |
 
 The `tee_salt` is generated once during eFuse KEY5 provisioning and never
 changes. It is appended to the keying material inside the TEE before HMAC
 derivation, adding a device-bound secret that the REE cannot observe.
+
+Exchange private keys are written on first activation and updated on password
+change or rotation. They are read from flash per ECDH/rotate operation (no RAM
+cache) and zeroized from the stack immediately after use. The partition-level
+encryption (eFuse KEY3) protects them at rest.
 
 ### TEE Secure Storage (Persistent, Encrypted)
 
@@ -289,11 +313,13 @@ monotonically; the active slot is `gen % NUM_EXCHANGE_KEYS`.
 ### Rotation Flow
 
 1. User triggers rotation via the web UI (`POST /api/rotate` with ECIES blob).
-2. REE verifies the password (re-derive + compare public keys in NVS).
-3. `gen` is incremented; the TEE derives the new exchange key for the new
-   generation and returns its public key.
-4. The new public key overwrites the oldest slot in the ring buffer.
-5. NVS is updated: the new slot's public key and the `gen` counter.
+2. REE passes keying material to the TEE's rotate service.
+3. The TEE verifies the password by re-deriving the current exchange key and
+   comparing it with the stored private key (constant-time comparison inside
+   the TEE). If it mismatches, the request is rejected.
+4. `gen` is incremented; the TEE derives the new exchange key, persists its
+   private key to TEE NVS, and returns the public key.
+5. REE updates the public key ring buffer and NVS (`gen` counter + slot).
 
 Clients that encrypted to an older (but still active) generation can still
 recover as long as that generation is still within the ring buffer window.
@@ -314,13 +340,15 @@ unaffected):
 
 1. Browser computes `old_hash` and `new_hash` (both PBKDF2) and sends both
    in a single 64-byte ECIES blob to `POST /api/change-password`.
-2. TEE verifies `HMAC(eFuse KEY5, old_keying || tee_salt) == current master_key`
-   (constant-time comparison). If it fails, the request is rejected.
-3. TEE derives `new_master_key = HMAC(eFuse KEY5, new_keying || tee_salt)` and
-   replaces the old master key.
-4. All exchange keys are re-derived from the new master key;
-   the generation counter resets to `NUM_EXCHANGE_KEYS - 1`.
-5. New exchange public keys are stored in NVS, replacing the old ones.
+2. TEE derives the old master key on the stack and verifies the old password
+   by comparing a re-derived exchange key with the one stored in TEE NVS
+   (constant-time comparison). If it mismatches, the request is rejected.
+3. TEE derives `new_master_key` on the stack from the new keying material.
+4. All exchange keys are re-derived from the new master key, persisted to
+   TEE NVS, and public keys are returned to the REE. Both master keys are
+   zeroized from the stack. The generation counter resets to
+   `NUM_EXCHANGE_KEYS - 1`.
+5. New exchange public keys are stored in REE NVS, replacing the old ones.
 
 **Important**: a password change invalidates all existing client bindings —
 clients that encrypted to old exchange keys will no longer be able to recover.
@@ -368,12 +396,12 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
                │ esp_tee_service_call()
 ┌──────────────▼───────────────────────────────┐
 │  ESP32 TEE (M-mode, hardware-isolated)       │
-│  • master_key (SRAM, volatile)               │
+│  • master_key (stack-only, zeroized per call) │
 │  • tee_salt (TEE NVS, persistent)            │
 │  • Signing key (Secure Storage, persistent)  │
+│  • Exchange privkeys (TEE NVS, persistent)   │
 │  • Exchange key derivation + ECDH            │
 │  • eFuse KEY5 HMAC peripheral                │
-│  • Exchange keys wiped on lock / reboot      │
 └──────────────────────────────────────────────┘
                │ Hardware HMAC
 ┌──────────────▼───────────────────────────────┐
@@ -387,16 +415,17 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 
 - **Private keys never leave the TEE.** Sign and ECDH operations are performed
   entirely within the TEE; only public keys and signatures are returned. The
-  signing key is in TEE Secure Storage; exchange keys are derived on-demand in
-  TEE SRAM.
+  signing key is in TEE Secure Storage; exchange private keys are persisted in
+  the TEE's encrypted NVS partition and read from flash per operation.
 - **The password never leaves the browser.** Only a salted PBKDF2 derivative
   is transmitted, and only under ECIES encryption.
 - **The eFuse key is hardware-protected.** Even a full firmware compromise
   (REE or TEE) cannot extract the raw eFuse key — only the HMAC peripheral can
   use it.
 - **Wrong passwords are detectable.** A wrong password produces a different
-  master key, which produces different public keys that fail to match the ones
-  stored in NVS.
+  master key, which produces different exchange keys that fail a constant-time
+  comparison against the private keys stored in TEE NVS. Verification happens
+  entirely inside the TEE — the REE only sees a pass/fail return code.
 - **Ephemeral tunnel keys** are regenerated after every use (not just at
   boot), providing per-operation forward secrecy for the password transport
   channel. Capturing a blob is useless once the tunnel key has rotated.

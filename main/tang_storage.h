@@ -5,9 +5,6 @@
 #include <cstring>
 #include <esp_log.h>
 #include <esp_random.h>
-extern "C" {
-#include <mbedtls/constant_time.h>
-}
 #include <mbedtls/platform_util.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -202,40 +199,6 @@ public:
     return ok;
   }
 
-  // Verify that derived exchange public keys match the ones stored in NVS.
-  bool verify_public_keys() {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open("tang-server", NVS_READONLY, &handle);
-    if (err != ESP_OK)
-      return false;
-
-    uint8_t stored[TEE_EC_PUBLIC_KEY_SIZE];
-    size_t len;
-    bool mismatch = false;
-
-    // Verify all exchange key slots (constant-time comparison)
-    for (int s = 0; s < NUM_EXCHANGE_KEYS && !mismatch; s++) {
-      len = TEE_EC_PUBLIC_KEY_SIZE;
-      if (nvs_get_blob(handle, exc_pub_nvs_key(s), stored, &len) != ESP_OK ||
-          mbedtls_ct_memcmp(exc_pub[s], stored, TEE_EC_PUBLIC_KEY_SIZE) != 0) {
-        mismatch = true;
-      }
-    }
-
-    if (mismatch) {
-      nvs_close(handle);
-      ESP_LOGW(TAG_STORAGE,
-               "Exchange key mismatch — wrong password or wrong device");
-      exc_pub_loaded = false;
-      return false;
-    }
-
-    nvs_close(handle);
-    ESP_LOGI(TAG_STORAGE,
-             "All derived exchange keys match NVS — password verified");
-    return true;
-  }
-
   // Load all exchange public keys and generation counter from NVS
   bool load_exchange_pubs() {
     nvs_handle_t handle;
@@ -266,20 +229,27 @@ public:
     return true;
   }
 
-  // Rotate: increment gen, derive new key via TEE, overwrite oldest slot in
-  // NVS.
-  bool rotate() {
+  // Rotate: increment gen, derive new key via TEE (with password verification),
+  // overwrite oldest slot in NVS.
+  bool rotate(const uint8_t *password_hash) {
     if (!activated)
       return false;
 
     unsigned int new_gen = gen + 1;
     int s = slot(new_gen);
 
-    // Derive new exchange key via TEE
+    // Build keying material: password_hash(32) || kdf_salt(32)
+    uint8_t keying[64];
+    memcpy(keying, password_hash, 32);
+    memcpy(keying + 32, kdf_salt, 32);
+
+    // Derive new exchange key via TEE (also verifies password)
     uint8_t new_pub[TEE_EC_PUBLIC_KEY_SIZE];
-    esp_err_t err = tang_tee_rotate(new_gen, new_pub);
+    esp_err_t err = tang_tee_rotate(keying, new_gen, new_pub);
+    mbedtls_platform_zeroize(keying, sizeof(keying));
     if (err != ESP_OK) {
-      ESP_LOGE(TAG_STORAGE, "TEE rotate failed for gen %u", new_gen);
+      ESP_LOGE(TAG_STORAGE, "TEE rotate failed for gen %u: %s", new_gen,
+               esp_err_to_name(err));
       return false;
     }
 

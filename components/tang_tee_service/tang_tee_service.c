@@ -30,7 +30,6 @@
 #define COMBINED_KM_SIZE (64 + TEE_SALT_SIZE) /* keying_material || tee_salt */
 
 /* TEE-protected state — invisible to REE */
-static uint8_t master_key[32];
 static bool activated = false;
 static uint32_t current_gen = 0;
 static uint32_t num_exchange_keys = 0;
@@ -223,13 +222,88 @@ static int compute_public_key(const uint8_t *priv, uint8_t *pub) {
   return ret;
 }
 
-/* Derive exchange key for a generation from master_key */
-static int derive_exchange_key(uint32_t generation, uint8_t *priv_out) {
+/* Derive exchange key for a generation from an explicit master key */
+static int derive_exchange_key(const uint8_t *mk, uint32_t generation,
+                               uint8_t *priv_out) {
   char info[32];
   int info_len =
       snprintf(info, sizeof(info), "tang-exchange-key-%" PRIu32, generation);
-  return derive_ec_private_key(master_key, (const uint8_t *)info, info_len,
-                               priv_out);
+  return derive_ec_private_key(mk, (const uint8_t *)info, info_len, priv_out);
+}
+
+/**
+ * NVS key name for an exchange key slot.
+ */
+static const char *exc_nvs_key(uint32_t slot) {
+  static char buf[16];
+  snprintf(buf, sizeof(buf), "exc_%u", (unsigned)slot);
+  return buf;
+}
+
+/**
+ * Read exchange key private key from NVS by slot index.
+ */
+static esp_err_t read_exchange_key(uint32_t slot,
+                                   uint8_t priv_out[EC_PRIV_SIZE]) {
+  esp_err_t err = ensure_nvs();
+  if (err != ESP_OK)
+    return err;
+
+  size_t len = EC_PRIV_SIZE;
+  return nvs_get_blob(tang_nvs, exc_nvs_key(slot), priv_out, &len);
+}
+
+/**
+ * Write exchange key private key to NVS by slot index.
+ */
+static esp_err_t write_exchange_key(uint32_t slot,
+                                    const uint8_t priv[EC_PRIV_SIZE]) {
+  esp_err_t err = ensure_nvs();
+  if (err != ESP_OK)
+    return err;
+
+  return nvs_set_blob(tang_nvs, exc_nvs_key(slot), priv, EC_PRIV_SIZE);
+}
+
+/**
+ * Erase all exchange keys from NVS (for partial-write recovery).
+ */
+static void erase_all_exchange_keys(uint32_t nkeys) {
+  if (!nvs_initialized)
+    return;
+  for (uint32_t s = 0; s < nkeys; s++)
+    nvs_erase_key(tang_nvs, exc_nvs_key(s));
+  nvs_commit(tang_nvs);
+}
+
+/**
+ * Verify password by deriving an exchange key and comparing with NVS.
+ * Uses the key at current_gen slot for comparison.
+ */
+static esp_err_t verify_password(const uint8_t *mk, uint32_t gen,
+                                 uint32_t nkeys) {
+  uint8_t derived_priv[EC_PRIV_SIZE];
+  int ret = derive_exchange_key(mk, gen, derived_priv);
+  if (ret != 0) {
+    mbedtls_platform_zeroize(derived_priv, sizeof(derived_priv));
+    return ESP_FAIL;
+  }
+
+  uint8_t stored_priv[EC_PRIV_SIZE];
+  esp_err_t err = read_exchange_key(gen % nkeys, stored_priv);
+  if (err != ESP_OK) {
+    mbedtls_platform_zeroize(derived_priv, sizeof(derived_priv));
+    return err;
+  }
+
+  /* Constant-time comparison */
+  int diff = 0;
+  for (int i = 0; i < EC_PRIV_SIZE; i++)
+    diff |= derived_priv[i] ^ stored_priv[i];
+  mbedtls_platform_zeroize(derived_priv, sizeof(derived_priv));
+  mbedtls_platform_zeroize(stored_priv, sizeof(stored_priv));
+
+  return (diff == 0) ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
 /* ------------------------------------------------------------------ */
@@ -237,58 +311,123 @@ static int derive_exchange_key(uint32_t generation, uint8_t *priv_out) {
 /* ------------------------------------------------------------------ */
 
 /**
- * SS 200: Activate — derive master_key, compute all exchange public keys.
+ * SS 200: Activate — derive master_key on stack, persist exchange private
+ * keys in NVS Secure Storage, compute all exchange public keys.
+ *
+ * First activation: derive all exchange keys → write to NVS → compute pubkeys.
+ * Subsequent: derive signing key on stack → compare with stored → if match,
+ * load all exchange keys from NVS → compute pubkeys → output.
+ * master_key is zeroized from the stack before returning.
  *
  * pub_keys_out layout: [exc_pub_0(64)] ... [exc_pub_N(64)]
  * where exc_pub slots are ordered by gen, gen-1, ... gen-(num_keys-1)
  * mapped to their ring buffer slots.
  *
- * Signing key is no longer password-derived — it lives in TEE Secure Storage.
+ * Signing key is not involved — it lives in TEE Secure Storage.
  *
  * @param keying_material  64 bytes: password_hash(32) || kdf_salt(32)
- *                         The kdf_salt ensures forward secrecy — same
- *                         password with different salt yields different keys.
  */
 esp_err_t _ss_tang_tee_activate(const uint8_t *keying_material, uint32_t gen,
                                 uint32_t nkeys, uint8_t *pub_keys_out) {
   if (!keying_material || !pub_keys_out || nkeys == 0)
     return ESP_ERR_INVALID_ARG;
 
-  /* Derive master_key = HMAC(eFuse KEY5, keying_material || tee_salt) */
-  esp_err_t err = derive_master_key(keying_material, master_key);
+  /* Derive master_key on stack — never stored statically */
+  uint8_t mk[32];
+  esp_err_t err = derive_master_key(keying_material, mk);
   if (err != ESP_OK)
     return err;
 
-  current_gen = gen;
-  num_exchange_keys = nkeys;
-
-  /* Derive and output exchange public keys */
-  uint8_t priv[EC_PRIV_SIZE];
-  for (uint32_t offset = 0; offset < nkeys; offset++) {
-    uint32_t g = gen - offset;
-    uint32_t s = g % nkeys;
-
-    int ret = derive_exchange_key(g, priv);
-    if (ret != 0) {
-      mbedtls_platform_zeroize(priv, sizeof(priv));
-      mbedtls_platform_zeroize(master_key, sizeof(master_key));
-      return ESP_FAIL;
-    }
-
-    ret = compute_public_key(priv, pub_keys_out + s * EC_PUB_SIZE);
-    mbedtls_platform_zeroize(priv, sizeof(priv));
-    if (ret != 0) {
-      mbedtls_platform_zeroize(master_key, sizeof(master_key));
-      return ESP_FAIL;
-    }
+  err = ensure_nvs();
+  if (err != ESP_OK) {
+    mbedtls_platform_zeroize(mk, sizeof(mk));
+    return err;
   }
 
+  /* Check if exchange keys already exist in NVS */
+  uint8_t probe[EC_PRIV_SIZE];
+  size_t probe_len = EC_PRIV_SIZE;
+  esp_err_t read_err =
+      nvs_get_blob(tang_nvs, exc_nvs_key(gen % nkeys), probe, &probe_len);
+  mbedtls_platform_zeroize(probe, sizeof(probe));
+
+  if (read_err == ESP_ERR_NVS_NOT_FOUND) {
+    /* First activation: derive all keys, write to NVS, compute pubkeys */
+    uint8_t priv[EC_PRIV_SIZE];
+    for (uint32_t offset = 0; offset < nkeys; offset++) {
+      uint32_t g = gen - offset;
+      uint32_t s = g % nkeys;
+
+      int ret = derive_exchange_key(mk, g, priv);
+      if (ret != 0) {
+        mbedtls_platform_zeroize(priv, sizeof(priv));
+        mbedtls_platform_zeroize(mk, sizeof(mk));
+        erase_all_exchange_keys(nkeys);
+        return ESP_FAIL;
+      }
+
+      err = write_exchange_key(s, priv);
+      if (err != ESP_OK) {
+        mbedtls_platform_zeroize(priv, sizeof(priv));
+        mbedtls_platform_zeroize(mk, sizeof(mk));
+        erase_all_exchange_keys(nkeys);
+        return err;
+      }
+
+      ret = compute_public_key(priv, pub_keys_out + s * EC_PUB_SIZE);
+      mbedtls_platform_zeroize(priv, sizeof(priv));
+      if (ret != 0) {
+        mbedtls_platform_zeroize(mk, sizeof(mk));
+        erase_all_exchange_keys(nkeys);
+        return ESP_FAIL;
+      }
+    }
+    nvs_commit(tang_nvs);
+  } else if (read_err == ESP_OK) {
+    /* Subsequent activation: verify password via exchange key comparison */
+    err = verify_password(mk, gen, nkeys);
+    if (err != ESP_OK) {
+      mbedtls_platform_zeroize(mk, sizeof(mk));
+      return err; /* ESP_ERR_INVALID_ARG = wrong password */
+    }
+
+    /* Password verified — load all exchange keys from NVS, compute pubkeys */
+    uint8_t priv[EC_PRIV_SIZE];
+    for (uint32_t offset = 0; offset < nkeys; offset++) {
+      uint32_t g = gen - offset;
+      uint32_t s = g % nkeys;
+
+      err = read_exchange_key(s, priv);
+      if (err != ESP_OK) {
+        /* Partial-write recovery: erase all, caller should retry */
+        mbedtls_platform_zeroize(priv, sizeof(priv));
+        mbedtls_platform_zeroize(mk, sizeof(mk));
+        erase_all_exchange_keys(nkeys);
+        return err;
+      }
+
+      int ret = compute_public_key(priv, pub_keys_out + s * EC_PUB_SIZE);
+      mbedtls_platform_zeroize(priv, sizeof(priv));
+      if (ret != 0) {
+        mbedtls_platform_zeroize(mk, sizeof(mk));
+        return ESP_FAIL;
+      }
+    }
+  } else {
+    mbedtls_platform_zeroize(mk, sizeof(mk));
+    return read_err;
+  }
+
+  mbedtls_platform_zeroize(mk, sizeof(mk));
+  current_gen = gen;
+  num_exchange_keys = nkeys;
   activated = true;
   return ESP_OK;
 }
 
 /**
  * SS 202: ECDH with a client public key.
+ * Reads exchange private key from NVS Secure Storage (no RAM cache).
  * shared_point_out = x(32) || y(32) of the shared point.
  */
 esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
@@ -299,10 +438,11 @@ esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
     return ESP_ERR_INVALID_ARG;
 
   uint8_t priv[EC_PRIV_SIZE];
-  int ret = derive_exchange_key(generation, priv);
-  if (ret != 0) {
+  uint32_t s = generation % num_exchange_keys;
+  esp_err_t err = read_exchange_key(s, priv);
+  if (err != ESP_OK) {
     mbedtls_platform_zeroize(priv, sizeof(priv));
-    return ESP_FAIL;
+    return err;
   }
 
   mbedtls_ecp_group grp;
@@ -313,7 +453,7 @@ esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
   mbedtls_ecp_point_init(&Q);
   mbedtls_mpi_init(&d);
 
-  ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+  int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
   if (ret == 0)
     ret = mbedtls_mpi_read_binary(&d, priv, EC_PRIV_SIZE);
   mbedtls_platform_zeroize(priv, sizeof(priv));
@@ -346,20 +486,49 @@ esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
 }
 
 /**
- * SS 203: Rotate — derive new exchange key, return its public key.
+ * SS 203: Rotate — verify password, derive new exchange key, persist to NVS,
+ * return its public key.
+ *
+ * @param keying_material  64 bytes: password_hash(32) || kdf_salt(32)
+ * @param new_gen          New generation number
+ * @param pub_key_out      Output public key for new generation (64 bytes)
  */
-esp_err_t _ss_tang_tee_rotate(uint32_t new_gen, uint8_t *pub_key_out) {
+esp_err_t _ss_tang_tee_rotate(const uint8_t *keying_material, uint32_t new_gen,
+                              uint8_t *pub_key_out) {
   if (!activated)
     return ESP_ERR_INVALID_STATE;
-  if (!pub_key_out)
+  if (!keying_material || !pub_key_out)
     return ESP_ERR_INVALID_ARG;
 
+  /* Derive master_key on stack and verify password */
+  uint8_t mk[32];
+  esp_err_t err = derive_master_key(keying_material, mk);
+  if (err != ESP_OK)
+    return err;
+
+  err = verify_password(mk, current_gen, num_exchange_keys);
+  if (err != ESP_OK) {
+    mbedtls_platform_zeroize(mk, sizeof(mk));
+    return err; /* ESP_ERR_INVALID_ARG = wrong password */
+  }
+
+  /* Derive new exchange key for new_gen */
   uint8_t priv[EC_PRIV_SIZE];
-  int ret = derive_exchange_key(new_gen, priv);
+  int ret = derive_exchange_key(mk, new_gen, priv);
+  mbedtls_platform_zeroize(mk, sizeof(mk));
   if (ret != 0) {
     mbedtls_platform_zeroize(priv, sizeof(priv));
     return ESP_FAIL;
   }
+
+  /* Persist to NVS */
+  uint32_t s = new_gen % num_exchange_keys;
+  err = write_exchange_key(s, priv);
+  if (err != ESP_OK) {
+    mbedtls_platform_zeroize(priv, sizeof(priv));
+    return err;
+  }
+  nvs_commit(tang_nvs);
 
   ret = compute_public_key(priv, pub_key_out);
   mbedtls_platform_zeroize(priv, sizeof(priv));
@@ -371,10 +540,9 @@ esp_err_t _ss_tang_tee_rotate(uint32_t new_gen, uint8_t *pub_key_out) {
 }
 
 /**
- * SS 204: Lock — wipe all secrets from TEE memory.
+ * SS 204: Lock — no RAM secrets to wipe (keys are in NVS).
  */
 esp_err_t _ss_tang_tee_lock(void) {
-  mbedtls_platform_zeroize(master_key, sizeof(master_key));
   activated = false;
   current_gen = 0;
   num_exchange_keys = 0;
@@ -382,7 +550,8 @@ esp_err_t _ss_tang_tee_lock(void) {
 }
 
 /**
- * SS 205: Change password — verify old, derive new, return new public keys.
+ * SS 205: Change password — verify old via exchange key comparison,
+ * derive new keys, persist to NVS, return new public keys.
  *
  * @param old_keying  64 bytes: old_password_hash(32) || old_kdf_salt(32)
  * @param new_keying  64 bytes: new_password_hash(32) || new_kdf_salt(32)
@@ -396,25 +565,20 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
   if (!old_keying || !new_keying || !pub_keys_out || nkeys == 0)
     return ESP_ERR_INVALID_ARG;
 
-  /* Verify old password: derive master from old keying material and compare */
-  uint8_t test_master[32];
-  esp_err_t err = derive_master_key(old_keying, test_master);
-  if (err != ESP_OK) {
-    mbedtls_platform_zeroize(test_master, sizeof(test_master));
+  /* Verify old password via exchange key comparison */
+  uint8_t old_mk[32];
+  esp_err_t err = derive_master_key(old_keying, old_mk);
+  if (err != ESP_OK)
     return err;
-  }
 
-  /* Constant-time comparison */
-  int diff = 0;
-  for (int i = 0; i < 32; i++)
-    diff |= test_master[i] ^ master_key[i];
-  mbedtls_platform_zeroize(test_master, sizeof(test_master));
+  err = verify_password(old_mk, current_gen, num_exchange_keys);
+  mbedtls_platform_zeroize(old_mk, sizeof(old_mk));
+  if (err != ESP_OK)
+    return err; /* ESP_ERR_INVALID_ARG = wrong old password */
 
-  if (diff != 0)
-    return ESP_ERR_INVALID_ARG; /* wrong old password */
-
-  /* Derive new master_key from new keying material (includes new salt) */
-  err = derive_master_key(new_keying, master_key);
+  /* Derive new master_key from new keying material */
+  uint8_t new_mk[32];
+  err = derive_master_key(new_keying, new_mk);
   if (err != ESP_OK)
     return err;
 
@@ -422,23 +586,35 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
   current_gen = nkeys - 1;
   num_exchange_keys = nkeys;
 
-  /* Derive all new exchange public keys (signing key is in TEE Secure Storage) */
+  /* Derive all new exchange keys, write to NVS, compute pubkeys */
   uint8_t priv[EC_PRIV_SIZE];
   for (uint32_t offset = 0; offset < nkeys; offset++) {
     uint32_t g = current_gen - offset;
     uint32_t s = g % nkeys;
 
-    int ret = derive_exchange_key(g, priv);
+    int ret = derive_exchange_key(new_mk, g, priv);
     if (ret != 0) {
       mbedtls_platform_zeroize(priv, sizeof(priv));
+      mbedtls_platform_zeroize(new_mk, sizeof(new_mk));
       return ESP_FAIL;
+    }
+
+    err = write_exchange_key(s, priv);
+    if (err != ESP_OK) {
+      mbedtls_platform_zeroize(priv, sizeof(priv));
+      mbedtls_platform_zeroize(new_mk, sizeof(new_mk));
+      return err;
     }
 
     ret = compute_public_key(priv, pub_keys_out + s * EC_PUB_SIZE);
     mbedtls_platform_zeroize(priv, sizeof(priv));
-    if (ret != 0)
+    if (ret != 0) {
+      mbedtls_platform_zeroize(new_mk, sizeof(new_mk));
       return ESP_FAIL;
+    }
   }
+  nvs_commit(tang_nvs);
+  mbedtls_platform_zeroize(new_mk, sizeof(new_mk));
 
   activated = true;
   return ESP_OK;

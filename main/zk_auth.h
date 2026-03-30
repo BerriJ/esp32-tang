@@ -384,10 +384,8 @@ public:
     if (keystore.derive_and_verify(decrypted)) {
       if (first_setup) {
         ESP_LOGI(TAG_ZK_AUTH, "First-time setup: storing derived public keys");
-        verification_result = keystore.store_public_keys();
-      } else {
-        verification_result = keystore.verify_public_keys();
       }
+      verification_result = keystore.store_public_keys();
     }
 
     mbedtls_platform_zeroize(decrypted, 32);
@@ -527,19 +525,11 @@ public:
       return strdup("{\"success\":false,\"error\":\"KDF salt missing\"}");
     }
 
-    bool password_ok = false;
-    if (keystore.derive_and_verify(decrypted))
-      password_ok = keystore.verify_public_keys();
-
+    bool rotate_ok = keystore.rotate(decrypted);
     mbedtls_platform_zeroize(decrypted, 32);
     free(decrypted);
 
-    if (!password_ok) {
-      ESP_LOGW(TAG_ZK_AUTH, "Key rotation password verification failed");
-      return strdup("{\"success\":false,\"error\":\"Invalid password\"}");
-    }
-
-    if (!keystore.rotate()) {
+    if (!rotate_ok) {
       ESP_LOGE(TAG_ZK_AUTH, "Key rotation failed");
       return strdup("{\"success\":false,\"error\":\"Rotation failed\"}");
     }

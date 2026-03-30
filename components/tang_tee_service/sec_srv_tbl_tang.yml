@@ -12,7 +12,7 @@ secure_services:
       - id: 203
         type: custom
         function: tang_tee_rotate
-        args: 2
+        args: 3
       - id: 204
         type: custom
         function: tang_tee_lock

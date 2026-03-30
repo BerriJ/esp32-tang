@@ -118,15 +118,18 @@ static inline esp_err_t tang_tee_ecdh(const uint8_t *client_pub,
 
 /**
  * Rotate to a new exchange key generation.
+ * Verifies password, derives new key, persists to NVS Secure Storage.
  *
- * @param new_gen       New generation number
- * @param pub_key_out   Output public key for new generation (64 bytes)
- * @return ESP_OK on success
+ * @param keying_material  64-byte buffer: password_hash(32) || kdf_salt(32)
+ * @param new_gen          New generation number
+ * @param pub_key_out      Output public key for new generation (64 bytes)
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if password is wrong
  */
-static inline esp_err_t tang_tee_rotate(uint32_t new_gen,
+static inline esp_err_t tang_tee_rotate(const uint8_t *keying_material,
+                                        uint32_t new_gen,
                                         uint8_t *pub_key_out) {
-  return (esp_err_t)esp_tee_service_call(3, SS_TANG_TEE_ROTATE, new_gen,
-                                         pub_key_out);
+  return (esp_err_t)esp_tee_service_call(4, SS_TANG_TEE_ROTATE, keying_material,
+                                         new_gen, pub_key_out);
 }
 
 /**

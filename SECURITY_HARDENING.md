@@ -27,7 +27,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 **V4. Unauthenticated destructive endpoints**
 - Files: `main/tang_handlers.h` (`handle_reboot`), `main/zk_handlers.h` (`handle_zk_lock`), `main/provision_handlers.h` (`handle_provision_api`)
-- Impact: Any device on the network can `GET /reboot` to crash the server, `POST /api/lock` to wipe TEE secrets (DoS), or race `POST /api/provision` on a fresh device to provision a known eFuse key.
+- Impact: Any device on the network can `GET /reboot` to crash the server, `POST /api/lock` to clear the TEE activated flag (DoS — exchange keys remain safely in TEE NVS but the device requires re-authentication), or race `POST /api/provision` on a fresh device to provision a known eFuse key.
 
 ### HIGH (P1)
 
@@ -90,8 +90,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 ### LOW (P3)
 
-**V18. NVS not encrypted**
-- Impact: KDF salt readable from flash dump. Not critical if flash encryption is enabled.
+**V18. ~~NVS not encrypted~~ FIXED**
+- **Status: Flash Encryption encrypts all NVS partitions on flash. TEE NVS partition (`secure_storage`) is additionally encrypted by eFuse KEY3.**
+- ~~Impact: KDF salt and exchange private keys readable from flash dump.~~
 
 **V19. Debug build configuration**
 - Files: `sdkconfig` (`CONFIG_COMPILER_OPTIMIZATION_DEBUG=y`)
@@ -296,7 +297,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - `main/tang_handlers.h` — authenticate /reboot, CORS
 - `main/provision_handlers.h` — guard /api/provision, CORS
 - `main/tang_storage.h` — thread-safe NVS key helper
-- `components/tang_tee_service/tang_tee_service.c` — no changes needed (already well-implemented)
+- `components/tang_tee_service/tang_tee_service.c` — TEE secure services: ECDH, key derivation, exchange key persistence in TEE NVS, password verification (constant-time comparison inside TEE)
 
 ---
 
