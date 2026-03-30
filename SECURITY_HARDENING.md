@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. The most urgent issues are: no TLS (HTTP plaintext), no secure boot, no flash encryption, unauthenticated destructive endpoints, and no brute-force protection. The recommended approach is a phased hardening plan starting with the most impactful firmware-level protections (secure boot + flash encryption), then transport security (HTTPS), then application-layer hardening (rate limiting, authentication, CSP).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, and **JTAG is disabled automatically** when Secure Boot is enabled. **TEE Secure Storage can be activated by following [PROVISIONING.md](PROVISIONING.md)**. The remaining urgent issues are: no TLS (HTTP plaintext), unauthenticated destructive endpoints, and no brute-force protection. The recommended approach continues with transport security (HTTPS), then application-layer hardening (rate limiting, authentication, CSP).
 
 ---
 
@@ -15,13 +15,15 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Impact: Even though ECIES protects the password hash, all response bodies (`/adv` JWS, `/rec` ECDH results, `/api/status`, `/api/identity`) are transmitted in cleartext. A network observer sees Tang protocol messages, device state, and can perform active MITM on the ECIES tunnel (replace device pubkey in `/api/identity` response).
 - The ECIES tunnel is a custom protocol and cannot authenticate the server — a MITM can serve their own ephemeral key and relay.
 
-**V2. No Secure Boot — unsigned firmware executes freely**
-- Files: `sdkconfig` (`CONFIG_SECURE_BOOT` not set)
-- Impact: Physical attacker can flash rogue firmware that replaces TEE code, exfiltrates master_key via a modified `_ss_tang_tee_activate()`, or installs a keylogger on the web UI.
+**V2. ~~No Secure Boot — unsigned firmware executes freely~~ FIXED**
+- **Status: Secure Boot V2 has been activated.**
+- Files: `sdkconfig` (`CONFIG_SECURE_BOOT`)
+- ~~Impact: Physical attacker can flash rogue firmware that replaces TEE code, exfiltrates master_key via a modified `_ss_tang_tee_activate()`, or installs a keylogger on the web UI.~~
 
-**V3. No Flash Encryption — firmware and NVS readable from flash**
-- Files: `sdkconfig` (`CONFIG_SECURE_FLASH_ENC_ENABLED` not set)
-- Impact: Physical attacker can dump flash to extract: WiFi credentials (SSID/password in plaintext), KDF salt (enables offline password brute-force against the HMAC-locked eFuse), public keys, and full firmware for reverse engineering.
+**V3. ~~No Flash Encryption — firmware and NVS readable from flash~~ FIXED**
+- **Status: Flash Encryption has been activated.**
+- Files: `sdkconfig` (`CONFIG_SECURE_FLASH_ENC_ENABLED`)
+- ~~Impact: Physical attacker can dump flash to extract: WiFi credentials (SSID/password in plaintext), KDF salt (enables offline password brute-force against the HMAC-locked eFuse), public keys, and full firmware for reverse engineering.~~
 
 **V4. Unauthenticated destructive endpoints**
 - Files: `main/tang_handlers.h` (`handle_reboot`), `main/zk_handlers.h` (`handle_zk_lock`), `main/provision_handlers.h` (`handle_provision_api`)
@@ -49,13 +51,15 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/zk_web_page.h` (PBKDF2 salt = MAC), `main/zk_auth.h` (get_identity_json)
 - Impact: MAC addresses are only 6 bytes, predictable, and often known. A dedicated attacker could pre-compute rainbow tables per-MAC. Should use a proper 16+ byte random salt.
 
-**V10. TEE in Development Mode**
+**V10. TEE Secure Storage**
+- **Status: TEE Secure Storage can be activated by following [PROVISIONING.md](PROVISIONING.md).**
 - Files: `sdkconfig` (`CONFIG_SECURE_TEE_SEC_STG_MODE_DEVELOPMENT=y`)
-- Impact: Development mode may relax security guarantees of TEE secure storage. Must switch to production mode.
+- Impact: Development mode may relax security guarantees of TEE secure storage. Follow the provisioning guide to switch to production mode.
 
-**V11. No JTAG protection**
-- Files: `sdkconfig` (no JTAG disable eFuse burned)
-- Impact: Physical attacker can attach JTAG debugger to inspect REE memory, set breakpoints during ECIES decryption to capture password_hash.
+**V11. ~~No JTAG protection~~ FIXED**
+- **Status: JTAG is disabled automatically when Secure Boot is enabled.**
+- Files: `sdkconfig`
+- ~~Impact: Physical attacker can attach JTAG debugger to inspect REE memory, set breakpoints during ECIES decryption to capture password_hash.~~
 
 ### MEDIUM (P2)
 
@@ -110,26 +114,20 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 ### Phase 1: Hardware Security Foundation (Secure Boot + Flash Encryption)
 *These are partially irreversible (eFuse burns). Must be done carefully.*
 
-**Step 1.1: Enable Secure Boot V2 (ECDSA)**
-- Enable `CONFIG_SECURE_BOOT=y` and `CONFIG_SECURE_BOOT_V2_ENABLED=y` in sdkconfig
-- Generate signing key pair for boot verification
-- The ESP32-C6 supports ECDSA-based Secure Boot V2 with P-256
-- eFuse will store the public key hash; builds must be signed with the private key
+**Step 1.1: ~~Enable Secure Boot V2 (ECDSA)~~ DONE**
+- ✅ Secure Boot V2 has been activated.
 - Fixes: V2
 
-**Step 1.2: Enable Flash Encryption (AES-XTS-256)**
-- Enable `CONFIG_SECURE_FLASH_ENC_ENABLED=y`
-- Start in Development Mode for testing, then switch to Release Mode
-- This encrypts all flash contents including NVS
+**Step 1.2: ~~Enable Flash Encryption (AES-XTS-256)~~ DONE**
+- ✅ Flash Encryption has been activated.
 - Fixes: V3, V18, V21 (WiFi creds in flash)
 
-**Step 1.3: Disable JTAG via eFuse**
-- Burn `JTAG_DISABLE` eFuse to permanently disable JTAG
-- Or use `CONFIG_SECURE_DISABLE_JTAG=y` in sdkconfig
+**Step 1.3: ~~Disable JTAG via eFuse~~ DONE**
+- ✅ JTAG is disabled automatically when Secure Boot is enabled.
 - Fixes: V11
 
-**Step 1.4: Switch TEE to Production Mode**
-- Change `CONFIG_SECURE_TEE_SEC_STG_MODE_DEVELOPMENT=n` → enable production mode
+**Step 1.4: Activate TEE Secure Storage**
+- TEE Secure Storage can be activated by following [PROVISIONING.md](PROVISIONING.md).
 - Fixes: V10
 
 **Step 1.5: Increase DPA Protection Level**
@@ -261,28 +259,28 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 ## Prioritized Action List
 
-| Priority | Action                             | Vuln | Effort  | Reversible?        |
-| -------- | ---------------------------------- | ---- | ------- | ------------------ |
-| 1        | Enable Secure Boot V2              | V2   | Medium  | No (eFuse burn)    |
-| 2        | Enable Flash Encryption            | V3   | Medium  | No in Release mode |
-| 3        | Enable HTTPS                       | V1   | Medium  | Yes                |
-| 4        | Authenticate destructive endpoints | V4   | Low     | Yes                |
-| 5        | Add rate limiting                  | V5   | Low     | Yes                |
-| 6        | Increase PBKDF2 to 600k iterations | V6   | Low     | Yes (breaking)     |
-| 7        | Remove console.log secrets         | V13  | Trivial | Yes                |
-| 8        | Add SRI / bundle crypto libs       | V8   | Low     | Yes                |
-| 9        | Restrict CORS                      | V7   | Trivial | Yes                |
-| 10       | Disable JTAG                       | V11  | Trivial | No (eFuse burn)    |
-| 11       | TEE Production Mode                | V10  | Trivial | Depends            |
-| 12       | Stronger PBKDF2 salt               | V9   | Low     | Yes (breaking)     |
-| 13       | Add CSP headers                    | V12  | Trivial | Yes                |
-| 14       | Increase DPA protection            | V14  | Trivial | Yes                |
-| 15       | WiFi backoff                       | V17  | Low     | Yes                |
-| 16       | Release build optimization         | V19  | Trivial | Yes                |
-| 17       | Thread-safe NVS key                | V20  | Trivial | Yes                |
-| 18       | Secure OTA                         | V15  | High    | Yes                |
-| 19       | WiFi provisioning                  | V21  | Medium  | Yes                |
-| 20       | Unique mDNS hostname               | V22  | Trivial | Yes                |
+| Priority | Action                                   | Vuln | Effort  | Reversible?      |
+| -------- | ---------------------------------------- | ---- | ------- | ---------------- |
+| ~~1~~    | ~~Enable Secure Boot V2~~ ✅              | V2   | —       | Done             |
+| ~~2~~    | ~~Enable Flash Encryption~~ ✅            | V3   | —       | Done             |
+| 3        | Enable HTTPS                             | V1   | Medium  | Yes              |
+| 4        | Authenticate destructive endpoints       | V4   | Low     | Yes              |
+| 5        | Add rate limiting                        | V5   | Low     | Yes              |
+| 6        | Increase PBKDF2 to 600k iterations       | V6   | Low     | Yes (breaking)   |
+| 7        | Remove console.log secrets               | V13  | Trivial | Yes              |
+| 8        | Add SRI / bundle crypto libs             | V8   | Low     | Yes              |
+| 9        | Restrict CORS                            | V7   | Trivial | Yes              |
+| ~~10~~   | ~~Disable JTAG~~ ✅                       | V11  | —       | Done (automatic) |
+| 11       | TEE Secure Storage (see PROVISIONING.md) | V10  | Trivial | Depends          |
+| 12       | Stronger PBKDF2 salt                     | V9   | Low     | Yes (breaking)   |
+| 13       | Add CSP headers                          | V12  | Trivial | Yes              |
+| 14       | Increase DPA protection                  | V14  | Trivial | Yes              |
+| 15       | WiFi backoff                             | V17  | Low     | Yes              |
+| 16       | Release build optimization               | V19  | Trivial | Yes              |
+| 17       | Thread-safe NVS key                      | V20  | Trivial | Yes              |
+| 18       | Secure OTA                               | V15  | High    | Yes              |
+| 19       | WiFi provisioning                        | V21  | Medium  | Yes              |
+| 20       | Unique mDNS hostname                     | V22  | Trivial | Yes              |
 
 ---
 
