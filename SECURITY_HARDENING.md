@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, and **JTAG is disabled automatically** when Secure Boot is enabled. **TEE Secure Storage can be activated by following [PROVISIONING.md](PROVISIONING.md)**. The remaining urgent issues are: no TLS (HTTP plaintext), unauthenticated destructive endpoints, and no brute-force protection. The recommended approach continues with transport security (HTTPS), then application-layer hardening (rate limiting, authentication, CSP).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, and **JTAG is disabled automatically** when Secure Boot is enabled. **TEE Secure Storage has been activated.** **PBKDF2 iterations have been increased to 600,000.** The remaining urgent issues are: no TLS (HTTP plaintext), unauthenticated destructive endpoints, and no brute-force protection. The recommended approach continues with transport security (HTTPS), then application-layer hardening (rate limiting, authentication, CSP).
 
 ---
 
@@ -33,11 +33,12 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 **V5. No rate limiting on password attempts**
 - Files: `main/zk_auth.h` (`process_unlock`)
-- Impact: Unlimited brute-force attempts. Combined with only 10,000 PBKDF2 iterations (OWASP 2023 recommends 600,000+ for SHA-256), offline attacks are feasible if the ECIES layer is bypassed.
+- Impact: Unlimited brute-force attempts. PBKDF2 iterations have been increased to 600,000 (OWASP 2023 recommended minimum for SHA-256), but rate limiting is still needed to prevent online brute-force.
 
-**V6. PBKDF2 iteration count too low (10,000)**
+**V6. ~~PBKDF2 iteration count too low (10,000)~~ FIXED**
+- **Status: PBKDF2 iterations increased to 600,000.**
 - Files: `main/zk_web_page.h` (JavaScript PBKDF2 call)
-- Impact: Modern GPUs can test billions of SHA-256 hashes/second. 10k iterations offers minimal protection.
+- ~~Impact: Modern GPUs can test billions of SHA-256 hashes/second. 10k iterations offers minimal protection.~~
 
 **V7. CORS wildcard (`Access-Control-Allow-Origin: *`)**
 - Files: `main/provision_handlers.h`, `main/zk_handlers.h` (all response headers)
@@ -51,10 +52,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/zk_web_page.h` (PBKDF2 salt = MAC), `main/zk_auth.h` (get_identity_json)
 - Impact: MAC addresses are only 6 bytes, predictable, and often known. A dedicated attacker could pre-compute rainbow tables per-MAC. Should use a proper 16+ byte random salt.
 
-**V10. TEE Secure Storage**
-- **Status: TEE Secure Storage can be activated by following [PROVISIONING.md](PROVISIONING.md).**
+**V10. ~~TEE Secure Storage in development mode~~ FIXED**
+- **Status: TEE Secure Storage has been activated.**
 - Files: `sdkconfig` (`CONFIG_SECURE_TEE_SEC_STG_MODE_DEVELOPMENT=y`)
-- Impact: Development mode may relax security guarantees of TEE secure storage. Follow the provisioning guide to switch to production mode.
+- ~~Impact: Development mode may relax security guarantees of TEE secure storage.~~
 
 **V11. ~~No JTAG protection~~ FIXED**
 - **Status: JTAG is disabled automatically when Secure Boot is enabled.**
@@ -126,8 +127,8 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - ✅ JTAG is disabled automatically when Secure Boot is enabled.
 - Fixes: V11
 
-**Step 1.4: Activate TEE Secure Storage**
-- TEE Secure Storage can be activated by following [PROVISIONING.md](PROVISIONING.md).
+**Step 1.4: ~~Activate TEE Secure Storage~~ DONE**
+- ✅ TEE Secure Storage has been activated.
 - Fixes: V10
 
 **Step 1.5: Increase DPA Protection Level**
@@ -179,9 +180,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Consider using a simple counter + timer in `ZKAuth` class
 - Fixes: V5
 
-**Step 3.2: Increase PBKDF2 iterations to 600,000**
-- Modify `main/zk_web_page.h`: change `iterations: 10000` → `iterations: 600000`
-- NOTE: This is a breaking change — existing password hashes will differ. Requires password re-enrollment or a migration path.
+**Step 3.2: ~~Increase PBKDF2 iterations to 600,000~~ DONE**
+- ✅ Changed all PBKDF2 calls in `main/zk_web_page.h` from 10,000 to 600,000 iterations.
+- NOTE: This is a breaking change — existing password hashes will differ. Requires password re-enrollment.
 - Fixes: V6
 
 **Step 3.3: Authenticate destructive endpoints**
@@ -266,12 +267,12 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | 3        | Enable HTTPS                             | V1   | Medium  | Yes              |
 | 4        | Authenticate destructive endpoints       | V4   | Low     | Yes              |
 | 5        | Add rate limiting                        | V5   | Low     | Yes              |
-| 6        | Increase PBKDF2 to 600k iterations       | V6   | Low     | Yes (breaking)   |
+| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅ | V6   | —       | Done (breaking)  |
 | 7        | Remove console.log secrets               | V13  | Trivial | Yes              |
 | 8        | Add SRI / bundle crypto libs             | V8   | Low     | Yes              |
 | 9        | Restrict CORS                            | V7   | Trivial | Yes              |
 | ~~10~~   | ~~Disable JTAG~~ ✅                       | V11  | —       | Done (automatic) |
-| 11       | TEE Secure Storage (see PROVISIONING.md) | V10  | Trivial | Depends          |
+| ~~11~~   | ~~TEE Secure Storage~~ ✅                 | V10  | —       | Done             |
 | 12       | Stronger PBKDF2 salt                     | V9   | Low     | Yes (breaking)   |
 | 13       | Add CSP headers                          | V12  | Trivial | Yes              |
 | 14       | Increase DPA protection                  | V14  | Trivial | Yes              |

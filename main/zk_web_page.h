@@ -644,13 +644,13 @@ async function performSecureUnlock() {
         showStatus('Computing zero-knowledge proof...', 'info', true);
         
         // Step 1: Derive session key using PBKDF2
-        // PBKDF2-HMAC-SHA256 with 10000 iterations
+        // PBKDF2-HMAC-SHA256 with 600000 iterations (OWASP 2023 minimum for SHA-256)
         // Use MAC address as salt (received from device identity)
         const macBytes = hexToBytes(deviceIdentity.macAddress);
         const salt = byteArrayToWordArray(macBytes);
         sessionKeyHash = CryptoJS.PBKDF2(password, salt, {
             keySize: 256/32,  // 256 bits = 8 words
-            iterations: 10000,
+            iterations: 600000,
             hasher: CryptoJS.algo.SHA256
         });
         
@@ -1030,7 +1030,7 @@ async function performRotate() {
         const salt = byteArrayToWordArray(macBytes);
 
         keyHash = CryptoJS.PBKDF2(pw, salt, {
-            keySize: 256/32, iterations: 10000, hasher: CryptoJS.algo.SHA256
+            keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
         });
         pwInput.value = '';
 
@@ -1092,12 +1092,12 @@ async function performPasswordChange() {
         const salt = byteArrayToWordArray(macBytes);
 
         oldKeyHash = CryptoJS.PBKDF2(currentPw, salt, {
-            keySize: 256/32, iterations: 10000, hasher: CryptoJS.algo.SHA256
+            keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
         });
         currentPwInput.value = '';
 
         newKeyHash = CryptoJS.PBKDF2(newPw, salt, {
-            keySize: 256/32, iterations: 10000, hasher: CryptoJS.algo.SHA256
+            keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
         });
         newPwInput.value = '';
 
