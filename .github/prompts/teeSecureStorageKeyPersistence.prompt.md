@@ -1,6 +1,6 @@
 ## Plan: TEE Secure Storage Key Persistence
 
-Store derived private keys in TEE Secure Storage (encrypted NVS partition) so `master_key` can be zeroized from TEE RAM after activation. Move password verification inside the TEE by comparing derived private keys with stored ones (replacing REE-side public key comparison). Private keys are read from flash on each sign/ECDH operation (no RAM cache). eFuse KEY3 encrypts the Secure Storage NVS partition.
+Store derived private keys in TEE Secure Storage (encrypted NVS partition) so `master_key` can be zeroized from TEE RAM after activation. Move password verification inside the TEE by comparing derived private keys with stored ones (replacing REE-side public key comparison). Private keys are read from flash on each sign/ECDH operation (no RAM cache). eFuse KEY2 encrypts the Secure Storage NVS partition.
 
 **Decisions**
 - Storage: Direct NVS blobs on the `secure_storage` partition, namespace `"tang_keys"` — partition-level encryption is sufficient, no AEAD wrapping layer
@@ -43,7 +43,7 @@ Store derived private keys in TEE Secure Storage (encrypted NVS partition) so `m
 
 *Phase 4 — Configuration*
 
-17. `sdkconfig.defaults`: set `CONFIG_SECURE_TEE_SEC_STG_EFUSE_HMAC_KEY_ID=3` in the production comment section
+17. `sdkconfig.defaults`: set `CONFIG_SECURE_TEE_SEC_STG_EFUSE_HMAC_KEY_ID=2` in the production comment section
 
 *Phase 5 — Verification*
 

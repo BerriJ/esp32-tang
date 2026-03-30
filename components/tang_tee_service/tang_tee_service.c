@@ -11,6 +11,8 @@
 #include "esp_hmac.h"
 #include "esp_random.h"
 #include "esp_tee.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "secure_service_num.h"
 
 #include <mbedtls/ecdsa.h>
@@ -24,6 +26,8 @@
 #define EC_PRIV_SIZE 32
 #define EC_PUB_SIZE 64
 #define EC_COORD_SIZE 32
+#define TEE_SALT_SIZE 32
+#define COMBINED_KM_SIZE (64 + TEE_SALT_SIZE) /* keying_material || tee_salt */
 
 /* TEE-protected state — invisible to REE */
 static uint8_t master_key[32];
@@ -31,9 +35,72 @@ static bool activated = false;
 static uint32_t current_gen = 0;
 static uint32_t num_exchange_keys = 0;
 
+/* NVS handle for TEE Secure Storage */
+static nvs_handle_t tang_nvs = 0;
+static bool nvs_initialized = false;
+
 /* ------------------------------------------------------------------ */
 /* Internal helpers                                                    */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Open the TEE Secure Storage NVS partition (idempotent).
+ */
+static esp_err_t ensure_nvs(void) {
+  if (nvs_initialized)
+    return ESP_OK;
+
+  esp_err_t err = nvs_flash_init_partition("secure_storage");
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
+      err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    /* Should not erase in production — indicates corruption */
+    return err;
+  }
+  if (err != ESP_OK)
+    return err;
+
+  err = nvs_open_from_partition("secure_storage", "tang_keys",
+                                NVS_READWRITE, &tang_nvs);
+  if (err != ESP_OK)
+    return err;
+
+  nvs_initialized = true;
+  return ESP_OK;
+}
+
+/**
+ * Read the TEE-side salt from Secure Storage.
+ */
+static esp_err_t read_tee_salt(uint8_t out[TEE_SALT_SIZE]) {
+  esp_err_t err = ensure_nvs();
+  if (err != ESP_OK)
+    return err;
+
+  size_t len = TEE_SALT_SIZE;
+  return nvs_get_blob(tang_nvs, "tee_salt", out, &len);
+}
+
+/**
+ * Build combined HMAC input: keying_material(64) || tee_salt(32).
+ * Derives master_key via HMAC(eFuse KEY5, combined).
+ * Zeroizes tee_salt and combined buffer on all paths.
+ */
+static esp_err_t derive_master_key(const uint8_t *keying_material,
+                                   uint8_t *mk_out) {
+  uint8_t tee_salt[TEE_SALT_SIZE];
+  esp_err_t err = read_tee_salt(tee_salt);
+  if (err != ESP_OK)
+    return err;
+
+  uint8_t combined[COMBINED_KM_SIZE];
+  memcpy(combined, keying_material, 64);
+  memcpy(combined + 64, tee_salt, TEE_SALT_SIZE);
+  mbedtls_platform_zeroize(tee_salt, sizeof(tee_salt));
+
+  err = esp_hmac_calculate(HMAC_KEY5, combined, COMBINED_KM_SIZE, mk_out);
+  mbedtls_platform_zeroize(combined, sizeof(combined));
+  return err;
+}
 
 /**
  * RNG callback for mbedtls ECP operations (side-channel blinding).
@@ -192,9 +259,8 @@ esp_err_t _ss_tang_tee_activate(const uint8_t *keying_material, uint32_t gen,
   if (!keying_material || !pub_keys_out || nkeys == 0)
     return ESP_ERR_INVALID_ARG;
 
-  /* Derive master_key = HMAC(eFuse KEY5, password_hash || kdf_salt) */
-  esp_err_t err =
-      esp_hmac_calculate(HMAC_KEY5, keying_material, 64, master_key);
+  /* Derive master_key = HMAC(eFuse KEY5, keying_material || tee_salt) */
+  esp_err_t err = derive_master_key(keying_material, master_key);
   if (err != ESP_OK)
     return err;
 
@@ -400,7 +466,7 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
 
   /* Verify old password: derive master from old keying material and compare */
   uint8_t test_master[32];
-  esp_err_t err = esp_hmac_calculate(HMAC_KEY5, old_keying, 64, test_master);
+  esp_err_t err = derive_master_key(old_keying, test_master);
   if (err != ESP_OK) {
     mbedtls_platform_zeroize(test_master, sizeof(test_master));
     return err;
@@ -416,7 +482,7 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
     return ESP_ERR_INVALID_ARG; /* wrong old password */
 
   /* Derive new master_key from new keying material (includes new salt) */
-  err = esp_hmac_calculate(HMAC_KEY5, new_keying, 64, master_key);
+  err = derive_master_key(new_keying, master_key);
   if (err != ESP_OK)
     return err;
 
@@ -468,8 +534,18 @@ esp_err_t _ss_tang_tee_provision_efuse(void) {
   if (err != ESP_OK)
     return err;
 
-  if (purpose == ESP_EFUSE_KEY_PURPOSE_HMAC_UP)
-    return ESP_OK; /* Already provisioned */
+  if (purpose == ESP_EFUSE_KEY_PURPOSE_HMAC_UP) {
+    /* KEY5 already provisioned — ensure tee_salt exists (firmware upgrade) */
+    uint8_t existing[TEE_SALT_SIZE];
+    esp_err_t salt_err = read_tee_salt(existing);
+    mbedtls_platform_zeroize(existing, sizeof(existing));
+    if (salt_err == ESP_OK)
+      return ESP_OK; /* Both KEY5 and tee_salt present */
+    if (salt_err != ESP_ERR_NVS_NOT_FOUND)
+      return salt_err;
+    /* tee_salt missing — generate it below */
+    goto generate_salt;
+  }
 
   if (purpose != ESP_EFUSE_KEY_PURPOSE_USER)
     return ESP_ERR_INVALID_STATE; /* Wrong purpose, can't provision */
@@ -492,7 +568,22 @@ esp_err_t _ss_tang_tee_provision_efuse(void) {
     return ESP_FAIL;
   }
 
-  return ESP_OK;
+generate_salt:;
+  /* Generate and store TEE-side salt in Secure Storage */
+  err = ensure_nvs();
+  if (err != ESP_OK)
+    return err;
+
+  uint8_t tee_salt[TEE_SALT_SIZE];
+  esp_fill_random(tee_salt, sizeof(tee_salt));
+
+  err = nvs_set_blob(tang_nvs, "tee_salt", tee_salt, sizeof(tee_salt));
+  mbedtls_platform_zeroize(tee_salt, sizeof(tee_salt));
+  if (err != ESP_OK)
+    return err;
+
+  err = nvs_commit(tang_nvs);
+  return err;
 }
 
 /**
