@@ -49,7 +49,8 @@ On each power-on the device executes these steps (in `setup()`):
 1. **NVS init** — initialize non-volatile storage.
 2. **eFuse KEY5 provisioning** — if KEY5 is unused, the TEE generates a random
    256-bit HMAC key, burns it into eFuse block KEY5 with purpose `HMAC_UP`, and
-   sets read/write protections. This is a **one-time, irreversible** operation.
+   sets read/write protections. It also generates a random 32-byte `tee_salt`
+   and stores it in TEE NVS. This is a **one-time, irreversible** operation.
 3. **Initialize signing key** — on first boot the TEE Secure Storage generates
    a random P-256 signing key (persisted encrypted in flash, `WRITE_ONCE`).
    The signing public key is loaded into REE memory.
@@ -87,7 +88,7 @@ User Password (plaintext, browser-only)
   ├─ PBKDF2-HMAC-SHA256(password, MAC-address, 10 000 iterations)
   │    → password_hash (32 bytes, sent to device via ECIES tunnel)
   │
-  └─ [Inside TEE] HMAC-SHA256(eFuse KEY5, password_hash || kdf_salt)
+  └─ [Inside TEE] HMAC-SHA256(eFuse KEY5, password_hash || kdf_salt || tee_salt)
        → master_key (32 bytes, TEE-only, never exported)
        │
        ├─ HKDF-Expand: HMAC-SHA256(master_key, "tang-exchange-key-{gen}" || 0x01)
@@ -97,10 +98,16 @@ User Password (plaintext, browser-only)
        └─ (one exchange key per active generation)
 ```
 
-The `kdf_salt` is a random 32-byte value stored in NVS. It is generated on
-first setup and regenerated on every password change, providing **forward
-secrecy**: even if the same password is reused, the derived keys will be
-completely different because the salt has changed.
+Two salts contribute to master key derivation:
+
+- The `kdf_salt` is a random 32-byte value stored in REE NVS. It is generated
+  on first setup and regenerated on every password change, providing **forward
+  secrecy**: even if the same password is reused, the derived keys will be
+  completely different because the salt has changed.
+- The `tee_salt` is a random 32-byte value stored in TEE NVS (inaccessible to
+  the REE). It is generated once during eFuse provisioning and never changes.
+  It ensures that even if an attacker obtains the `password_hash` and
+  `kdf_salt`, they cannot derive the master key without access to TEE storage.
 
 ### 1. PBKDF2 Password Hash (Client Side)
 
@@ -123,12 +130,20 @@ Inside the TEE, the master key is derived using the **hardware HMAC peripheral**
 tied to the one-time-programmable eFuse KEY5:
 
 ```
-master_key = HMAC-SHA256(eFuse_KEY5, password_hash || kdf_salt)
+master_key = HMAC-SHA256(eFuse_KEY5, password_hash || kdf_salt || tee_salt)
 ```
 
-- The `kdf_salt` is a random 32-byte value stored in NVS, regenerated on every
-  password change. This ensures that reverting to a previous password still
-  produces completely different derived keys (**forward secrecy**).
+The REE builds a 64-byte `keying_material = password_hash(32) || kdf_salt(32)`
+and passes it to the TEE. The TEE reads its own `tee_salt` from TEE NVS and
+appends it to form a 96-byte HMAC input. The `tee_salt` and combined buffer are
+zeroized immediately after use.
+
+- The `kdf_salt` is a random 32-byte value stored in REE NVS, regenerated on
+  every password change. This ensures that reverting to a previous password
+  still produces completely different derived keys (**forward secrecy**).
+- The `tee_salt` is a random 32-byte value stored in TEE NVS, generated once
+  during eFuse provisioning. It is invisible to the REE and adds an additional
+  secret that an attacker must compromise to derive the master key.
 - The eFuse KEY5 is **read-protected**: even the TEE firmware cannot read the
   raw key bytes; it can only invoke the HMAC peripheral.
 - The master key exists only in TEE SRAM and is wiped on lock or reboot.
@@ -188,15 +203,15 @@ hardware HMAC peripheral (`esp_hmac_calculate()`).
 
 ### NVS (Non-Volatile Storage)
 
-The `tang-server` NVS namespace stores **public keys only**:
+The `tang-server` REE NVS namespace stores **public keys and the REE-side salt**:
 
-| NVS Key     | Type | Size | Description                       |
-| ----------- | ---- | ---- | --------------------------------- |
-| `exc_pub_0` | blob | 64 B | Exchange public key, slot 0       |
-| `exc_pub_1` | blob | 64 B | Exchange public key, slot 1       |
-| …           | …    | …    | … up to `NUM_EXCHANGE_KEYS - 1`   |
-| `gen`       | u32  | 4 B  | Current generation counter        |
-| `kdf_salt`  | blob | 32 B | Random KDF salt (forward secrecy) |
+| NVS Key     | Type | Size | Description                           |
+| ----------- | ---- | ---- | ------------------------------------- |
+| `exc_pub_0` | blob | 64 B | Exchange public key, slot 0           |
+| `exc_pub_1` | blob | 64 B | Exchange public key, slot 1           |
+| …           | …    | …    | … up to `NUM_EXCHANGE_KEYS - 1`       |
+| `gen`       | u32  | 4 B  | Current generation counter            |
+| `kdf_salt`  | blob | 32 B | Random REE KDF salt (forward secrecy) |
 
 Exchange public keys are loaded at boot for `/adv` responses and are updated
 when keys are rotated or the password is changed. The signing public key is
@@ -212,6 +227,18 @@ The TEE maintains in-memory state that is lost on reboot or lock:
 
 Exchange private keys are **never stored**; they are re-derived from
 `master_key` on every ECDH/rotate operation and immediately wiped.
+
+### TEE NVS (Persistent, TEE-Only)
+
+The TEE has its own NVS namespace (`tang-server`), inaccessible to the REE:
+
+| NVS Key    | Type | Size | Description                                   |
+| ---------- | ---- | ---- | --------------------------------------------- |
+| `tee_salt` | blob | 32 B | Random TEE-side salt (generated at provision) |
+
+The `tee_salt` is generated once during eFuse KEY5 provisioning and never
+changes. It is appended to the keying material inside the TEE before HMAC
+derivation, adding a device-bound secret that the REE cannot observe.
 
 ### TEE Secure Storage (Persistent, Encrypted)
 
@@ -287,10 +314,10 @@ unaffected):
 
 1. Browser computes `old_hash` and `new_hash` (both PBKDF2) and sends both
    in a single 64-byte ECIES blob to `POST /api/change-password`.
-2. TEE verifies `HMAC(eFuse KEY5, old_hash) == current master_key`
+2. TEE verifies `HMAC(eFuse KEY5, old_keying || tee_salt) == current master_key`
    (constant-time comparison). If it fails, the request is rejected.
-3. TEE derives `new_master_key = HMAC(eFuse KEY5, new_hash)` and replaces the
-   old master key.
+3. TEE derives `new_master_key = HMAC(eFuse KEY5, new_keying || tee_salt)` and
+   replaces the old master key.
 4. All exchange keys are re-derived from the new master key;
    the generation counter resets to `NUM_EXCHANGE_KEYS - 1`.
 5. New exchange public keys are stored in NVS, replacing the old ones.
@@ -342,6 +369,7 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 ┌──────────────▼───────────────────────────────┐
 │  ESP32 TEE (M-mode, hardware-isolated)       │
 │  • master_key (SRAM, volatile)               │
+│  • tee_salt (TEE NVS, persistent)            │
 │  • Signing key (Secure Storage, persistent)  │
 │  • Exchange key derivation + ECDH            │
 │  • eFuse KEY5 HMAC peripheral                │
