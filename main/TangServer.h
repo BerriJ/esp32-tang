@@ -152,9 +152,13 @@ void setup() {
   ESP_ERROR_CHECK(ret);
   ESP_LOGI(TAG, "NVS initialized");
 
-  // 2. Provision eFuse KEY5 if not already burned
+  // 2. Provision eFuse KEY5 if not already burned.
+  //    Always call provision_efuse_key5() when HMAC_UP — it's idempotent and
+  //    ensures tee_salt exists in secure storage (may be missing after
+  //    re-flash).
   if (is_efuse_key5_hmac_up()) {
     ESP_LOGI(TAG, "eFuse KEY5 already provisioned with HMAC_UP");
+    provision_efuse_key5();
   } else if (is_efuse_key5_free()) {
     ESP_LOGI(TAG, "First boot — provisioning eFuse HMAC key...");
     if (provision_efuse_key5()) {
