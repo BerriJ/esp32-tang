@@ -15,7 +15,7 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 ## Prerequisites
 
 - `esptool.py`, `espefuse.py`, `espsecure.py` (included in ESP-IDF)
-- Signing key: `secure_boot_signing_key.pem` (ECDSA P-256)
+- Signing key: `secure_boot_signing_key.pem` (ECDSA P-256) (`espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_signing_key.pem`)
 - Built firmware (`idf.py build` completed successfully)
 
 ## eFuse Key Block Allocation
@@ -173,7 +173,7 @@ Since flash encryption is active (`SPI_BOOT_CRYPT_CNT` has odd bits set), you **
 ```bash
 esptool.py --chip esp32c6 -p /dev/ttyACM1 --baud 460800 \
   --before=default_reset --after=no_reset --no-stub \
-  write_flash --encrypt --flash_mode dio --flash_freq 80m --flash_size 2MB \
+  write_flash --force --encrypt --flash_mode dio --flash_freq 80m --flash_size 2MB \
   0x0 build/bootloader/bootloader.bin \
   0x10000 build/partition_table/partition-table.bin \
   0x20000 build/esp_tee/esp_tee.bin \
