@@ -88,8 +88,7 @@ public:
       return true;
     }
     // Key already exists — treat as success
-    ESP_LOGI(TAG_STORAGE, "Signing key already in TEE Secure Storage (err=%s)",
-             esp_err_to_name(err));
+    ESP_LOGI(TAG_STORAGE, "Signing key already in TEE Secure Storage");
     return true;
   }
 

@@ -152,13 +152,9 @@ void setup() {
   ESP_ERROR_CHECK(ret);
   ESP_LOGI(TAG, "NVS initialized");
 
-  // 2. Provision eFuse KEY5 if not already burned.
-  //    Always call provision_efuse_key5() when HMAC_UP — it's idempotent and
-  //    ensures tee_salt exists in secure storage (may be missing after
-  //    re-flash).
+  // 2. Provision eFuse KEY5 (no-op if already burned)
   if (is_efuse_key5_hmac_up()) {
     ESP_LOGI(TAG, "eFuse KEY5 already provisioned with HMAC_UP");
-    provision_efuse_key5();
   } else if (is_efuse_key5_free()) {
     ESP_LOGI(TAG, "First boot — provisioning eFuse HMAC key...");
     if (provision_efuse_key5()) {
@@ -169,6 +165,11 @@ void setup() {
   } else {
     ESP_LOGE(TAG, "eFuse KEY5 has wrong purpose (expected HMAC_UP) — "
                   "HMAC key derivation will not work");
+  }
+
+  // 2b. Ensure TEE salt exists (may be missing after re-flash)
+  if (is_efuse_key5_hmac_up() && !ensure_tee_salt()) {
+    ESP_LOGE(TAG, "Failed to initialize TEE salt");
   }
 
   // 3. Initialize signing key in TEE Secure Storage (first boot generates,

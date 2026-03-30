@@ -29,3 +29,7 @@ secure_services:
         type: custom
         function: tang_tee_efuse_status
         args: 1
+      - id: 208
+        type: custom
+        function: tang_tee_ensure_tee_salt
+        args: 0

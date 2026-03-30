@@ -33,20 +33,30 @@ bool is_efuse_key5_free() {
 }
 
 /**
- * Provision a random 256-bit HMAC key to EFUSE BLOCK_KEY5 via TEE.
- * Called once on first boot.
+ * Burn a random 256-bit HMAC key to eFuse KEY5 via TEE.
+ * No-op if KEY5 is already HMAC_UP.
  */
 bool provision_efuse_key5() {
-  ESP_LOGI(TAG_PROVISION, "=== Starting EFUSE KEY5 Provisioning via TEE ===");
-
   esp_err_t err = tang_tee_provision_efuse();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG_PROVISION, "TEE efuse provisioning failed: %s",
+    ESP_LOGE(TAG_PROVISION, "eFuse KEY5 provisioning failed: %s",
              esp_err_to_name(err));
     return false;
   }
+  return true;
+}
 
-  ESP_LOGI(TAG_PROVISION, "EFUSE KEY5 provisioned successfully via TEE!");
+/**
+ * Ensure tee_salt exists in TEE Secure Storage.
+ * Generates a random salt if missing (e.g. after re-flash), no-op otherwise.
+ */
+bool ensure_tee_salt() {
+  esp_err_t err = tang_tee_ensure_tee_salt();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG_PROVISION, "TEE salt initialization failed: %s",
+             esp_err_to_name(err));
+    return false;
+  }
   return true;
 }
 

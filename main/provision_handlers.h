@@ -70,6 +70,11 @@ static esp_err_t handle_provision_api(httpd_req_t *req) {
     }
   }
 
+  if (success && !ensure_tee_salt()) {
+    message = "EFUSE KEY5 provisioned but TEE salt initialization failed";
+    success = false;
+  }
+
   cJSON_AddBoolToObject(response, "success", success);
   cJSON_AddStringToObject(response, "message", message);
 

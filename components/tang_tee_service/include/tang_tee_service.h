@@ -159,13 +159,25 @@ static inline esp_err_t tang_tee_change_password(const uint8_t *old_keying,
 }
 
 /**
- * Provision eFuse KEY5 with a random HMAC key (one-time operation).
- * Only succeeds if KEY5 is currently free.
+ * Provision eFuse KEY5 with a random HMAC key.
+ * No-op if KEY5 is already HMAC_UP.
+ * Does not generate tee_salt — call tang_tee_ensure_tee_salt() separately.
  *
- * @return ESP_OK on success
+ * @return ESP_OK on success or if already provisioned
  */
 static inline esp_err_t tang_tee_provision_efuse(void) {
   return (esp_err_t)esp_tee_service_call(1, SS_TANG_TEE_PROVISION_EFUSE);
+}
+
+/**
+ * Ensure tee_salt exists in TEE Secure Storage.
+ * Generates a random salt if missing, no-op if already present.
+ * Must be called after eFuse KEY5 is provisioned.
+ *
+ * @return ESP_OK on success
+ */
+static inline esp_err_t tang_tee_ensure_tee_salt(void) {
+  return (esp_err_t)esp_tee_service_call(1, SS_TANG_TEE_ENSURE_TEE_SALT);
 }
 
 /**

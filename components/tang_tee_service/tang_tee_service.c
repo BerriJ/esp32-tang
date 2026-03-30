@@ -446,27 +446,18 @@ esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
 
 /**
  * SS 206: Provision eFuse KEY5 with a random HMAC key.
+ * Only burns the eFuse — does not touch tee_salt.
+ * No-op if KEY5 is already HMAC_UP.
  */
 esp_err_t _ss_tang_tee_provision_efuse(void) {
-  /* Check if KEY5 is free */
   esp_efuse_purpose_t purpose;
   esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_KEY_PURPOSE_5, &purpose,
                                             sizeof(purpose) * 8);
   if (err != ESP_OK)
     return err;
 
-  if (purpose == ESP_EFUSE_KEY_PURPOSE_HMAC_UP) {
-    /* KEY5 already provisioned — ensure tee_salt exists (firmware upgrade) */
-    uint8_t existing[TEE_SALT_SIZE];
-    esp_err_t salt_err = read_tee_salt(existing);
-    mbedtls_platform_zeroize(existing, sizeof(existing));
-    if (salt_err == ESP_OK)
-      return ESP_OK; /* Both KEY5 and tee_salt present */
-    if (salt_err != ESP_ERR_NVS_NOT_FOUND)
-      return salt_err;
-    /* tee_salt missing — generate it below */
-    goto generate_salt;
-  }
+  if (purpose == ESP_EFUSE_KEY_PURPOSE_HMAC_UP)
+    return ESP_OK; /* Already provisioned */
 
   if (purpose != ESP_EFUSE_KEY_PURPOSE_USER)
     return ESP_ERR_INVALID_STATE; /* Wrong purpose, can't provision */
@@ -489,8 +480,25 @@ esp_err_t _ss_tang_tee_provision_efuse(void) {
     return ESP_FAIL;
   }
 
-generate_salt:;
-  /* Generate and store TEE-side salt in Secure Storage */
+  return ESP_OK;
+}
+
+/**
+ * SS 208: Ensure tee_salt exists in TEE Secure Storage.
+ * Generates a random 32-byte salt if missing. No-op if already present.
+ * Must be called after eFuse KEY5 is provisioned.
+ */
+esp_err_t _ss_tang_tee_ensure_tee_salt(void) {
+  /* Check if tee_salt already exists */
+  uint8_t existing[TEE_SALT_SIZE];
+  esp_err_t err = read_tee_salt(existing);
+  mbedtls_platform_zeroize(existing, sizeof(existing));
+  if (err == ESP_OK)
+    return ESP_OK; /* Already present */
+  if (err != ESP_ERR_NVS_NOT_FOUND)
+    return err;
+
+  /* Generate and store new tee_salt */
   err = ensure_nvs();
   if (err != ESP_OK)
     return err;
@@ -503,8 +511,7 @@ generate_salt:;
   if (err != ESP_OK)
     return err;
 
-  err = nvs_commit(tang_nvs);
-  return err;
+  return nvs_commit(tang_nvs);
 }
 
 /**
