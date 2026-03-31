@@ -159,6 +159,13 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
     return ESP_FAIL;
   }
 
+  // P-256 JWK: two 43-char base64url coordinates + JSON framing ≈ 256 bytes.
+  // 1 KiB is generous but guards against allocation attacks.
+  if (req->content_len == 0 || req->content_len > 1024) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body size");
+    return ESP_FAIL;
+  }
+
   char *buf = (char *)malloc(req->content_len + 1);
   if (!buf) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
