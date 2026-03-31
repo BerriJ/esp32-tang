@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, and **JTAG is disabled automatically** when Secure Boot is enabled. **TEE Secure Storage has been activated.** **PBKDF2 iterations have been increased to 600,000.** The remaining urgent issues are: no TLS (HTTP plaintext), unauthenticated destructive endpoints, and no brute-force protection. The recommended approach continues with transport security (HTTPS), then application-layer hardening (rate limiting, authentication, CSP).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, and **HTTPS has been enabled**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, WiFi backoff, release build optimization).
 
 ---
 
@@ -159,13 +159,12 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 ### Phase 2: Transport Security (HTTPS)
 *Depends on: nothing (can be done in parallel with Phase 1)*
 
-**Step 2.1: Enable HTTPS with self-signed certificate**
-- Replace `httpd_start()` with `httpd_ssl_start()` from `esp_https_server` component
-- Generate a self-signed EC P-256 certificate at first boot (or embed one)
-- Store cert+key in NVS (encrypted after Phase 1) or derive from TEE
-- Modify `main/TangServer.h`: `setup_http_server()` to use `httpd_ssl_config_t`
-- Add `esp_https_server` to `REQUIRES` in `main/CMakeLists.txt`
-- Update all `fetch()` calls in `zk_web_page.h` - they'll work as-is over HTTPS
+**Step 2.1: ~~Enable HTTPS with self-signed certificate~~ DONE**
+- ✅ Replaced `httpd_start()` with `httpd_ssl_start()` from `esp_https_server` component.
+- ✅ Self-signed EC P-256 certificate and key embedded in firmware.
+- ✅ `esp_https_server` added to `REQUIRES` in `main/CMakeLists.txt`.
+- ✅ All `fetch()` calls in `zk_web_page.h` work over HTTPS.
+- ✅ Web UI requires secure context for Web Crypto API.
 - Fixes: V1
 
 **Step 2.2: Redirect HTTP to HTTPS (optional)**
@@ -223,9 +222,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Factory partition expanded from 1MB to 1216KB to accommodate the additional ~195KB.
 - Fixes: V8
 
-**Step 3.8: Remove console.log of secrets**
-- Remove all `console.log` lines that output Session Key, Shared Secret, Encryption Key, MAC Key
-- Modify: `main/zk_web_page.h` (JavaScript section)
+**Step 3.8: ~~Remove console.log of secrets~~ DONE**
+- ✅ All `console.log` statements exposing secrets removed during Web Crypto API migration.
+- ✅ Only non-sensitive status messages remain (e.g., "Device Public Key loaded").
 - Fixes: V13
 
 **Step 3.9: Add WiFi reconnect backoff**
@@ -272,11 +271,11 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | -------- | ----------------------------------------------- | ---- | ------- | ---------------- |
 | ~~1~~    | ~~Enable Secure Boot V2~~ ✅                     | V2   | —       | Done             |
 | ~~2~~    | ~~Enable Flash Encryption~~ ✅                   | V3   | —       | Done             |
-| 3        | Enable HTTPS                                    | V1   | Medium  | Yes              |
+| ~~3~~    | ~~Enable HTTPS~~ ✅                              | V1   | —       | Done             |
 | ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —       | N/A (accepted)   |
 | ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —       | Done             |
 | ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —       | Done (breaking)  |
-| 7        | Remove console.log secrets                      | V13  | Trivial | Yes              |
+| ~~7~~    | ~~Remove console.log secrets~~ ✅                | V13  | —       | Done             |
 | ~~8~~    | ~~Add SRI / bundle crypto libs~~ ✅              | V8   | —       | Done             |
 | ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —       | Done             |
 | ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —       | Done (automatic) |
