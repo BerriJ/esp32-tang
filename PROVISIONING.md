@@ -6,10 +6,6 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 
 `CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS=y` is set, which means the bootloader will **not** write-protect `RD_DIS` on first boot. This allows HMAC keys to be burned and read-protected **after** secure boot is enabled, giving more flexibility in provisioning order.
 
-**Recommended order:**
-1. Flash firmware (triggers secure boot + flash encryption on first boot)
-2. Burn TEE HMAC keys into eFuse (can be done after first boot)
-
 > **Security note:** This option means an attacker with physical access could theoretically read-protect the secure boot digest block (KEY0) to cause a denial of service. If this is a concern for your threat model, burn HMAC keys before first boot and remove `CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS` from sdkconfig.defaults.
 
 ## Prerequisites
@@ -44,27 +40,17 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 
 ## Production Provisioning Steps
 
-### 1. Switch sdkconfig.defaults to release mode
+### 1. Generate HTTPS server certificate
 
-```ini
-CONFIG_SECURE_TEE_SEC_STG_MODE_RELEASE=y
-CONFIG_SECURE_TEE_SEC_STG_EFUSE_HMAC_KEY_ID=2
-CONFIG_SECURE_TEE_PBKDF2_EFUSE_HMAC_KEY_ID=3
+```bash
+openssl ecparam -genkey -name prime256v1 -noout -out https_server.key
+
+openssl req -new -x509 -key https_server.key -out https_server.crt \
+  -days 3650 -subj "/CN=esp-tang-lol" \
+  -addext "subjectAltName=DNS:esp-tang-lol"
 ```
 
-Comment out the development mode lines:
-
-```ini
-# CONFIG_SECURE_TEE_SEC_STG_MODE_DEVELOPMENT=y
-# CONFIG_SECURE_TEE_SEC_STG_EFUSE_HMAC_KEY_ID=-1
-# CONFIG_SECURE_TEE_PBKDF2_EFUSE_HMAC_KEY_ID=-1
-```
-
-Also switch flash encryption to release mode:
-
-```ini
-CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
-```
+Place both files in the project root (next to `CMakeLists.txt`). They are embedded into the firmware via `EMBED_TXTFILES` in `main/CMakeLists.txt` and protected at rest by flash encryption.
 
 ### 2. Build firmware
 
@@ -131,6 +117,8 @@ On first boot, the bootloader will automatically:
 idf.py -p /dev/ttyACM1 monitor
 ```
 
+> A soft reset may cause a race condition witht the ESP32-C6 crypto hardware causing a bootloop. In that case press the reset button to hard-reset and it should boot normally.
+
 Verify:
 - `ECDSA secure boot verification succeeded`
 - `secure boot v2 is already enabled`
@@ -157,18 +145,17 @@ espefuse.py --port /dev/ttyACM1 summary 2>&1 | grep RD_DIS
 
 > **WARNING: This is irreversible.** Only do this after confirming all HMAC key blocks are correctly provisioned and read-protected.
 
-## Development Workflow (Current Chip)
+## Development
 
-For the current dev chip where `RD_DIS` is already locked, use development mode:
+Since flash encryption is active (`SPI_BOOT_CRYPT_CNT` has odd bits set), you **must** use `--encrypt` when flashing.
 
-```ini
-CONFIG_SECURE_TEE_SEC_STG_MODE_DEVELOPMENT=y
-CONFIG_SECURE_TEE_SEC_STG_EFUSE_HMAC_KEY_ID=-1
-CONFIG_SECURE_TEE_PBKDF2_EFUSE_HMAC_KEY_ID=-1
-CONFIG_SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT=y
+The simplest option is `idf.py encrypted-flash`, which flashes everything except the bootloader with encryption:
+
+```bash
+idf.py -p /dev/ttyACM1 encrypted-flash
 ```
 
-Since flash encryption is active (`SPI_BOOT_CRYPT_CNT` has odd bits set), you **must** use `--encrypt` when flashing. `idf.py flash` skips the bootloader when secure boot is enabled, so use esptool directly:
+> **Note:** `idf.py encrypted-flash` (like `idf.py flash`) skips the bootloader when secure boot is enabled. To flash the bootloader as well, use esptool directly:
 
 ```bash
 esptool.py --chip esp32c6 -p /dev/ttyACM1 --baud 460800 \
@@ -192,8 +179,8 @@ esptool.py --chip esp32c6 -p /dev/ttyACM1 --baud 460800 \
 
 ## Gotchas
 
-- **Lock `RD_DIS` after provisioning** — with `ALLOW_EFUSE_RD_DIS`, RD_DIS stays writable; run `espefuse.py write_protect_efuse RD_DIS` as a final hardening step after all keys are burned
-- **`idf.py flash` skips the bootloader** when secure boot is enabled — use `esptool.py write_flash` directly with the bootloader address
+- **Lock `RD_DIS` after provisioning** — with `ALLOW_EFUSE_RD_DIS`, RD_DIS stays writable; run `espefuse.py write_protect_efuse RD_DIS` as a final hardening step after all keys are burned (inkluding key5 which will be burned during the first boot process).
+- **`idf.py encrypted-flash` skips the bootloader** when secure boot is enabled — use `esptool.py write_flash` directly with the bootloader address
 - **Signing scheme must match** — `CONFIG_SECURE_SIGNED_APPS_ECDSA_V2_SCHEME=y` for ECDSA keys; the default is RSA even if you generated an ECDSA key
 - **Partition table offset 0x10000** is required because the signed bootloader exceeds 32 KB (default 0x8000)
 - **TEE app partition must be 0x10000-aligned** (0x20000, not 0x18000)
