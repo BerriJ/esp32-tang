@@ -76,6 +76,15 @@ static bool save_wifi_config_to_nvs(const char *ssid, const char *password,
 
 static esp_err_t handle_prov_root(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
+  httpd_resp_set_hdr(
+      req, "Content-Security-Policy",
+      "default-src 'none'; "
+      "script-src 'sha256-vYaSfpaKr5QWVc5HgWafqhev+ds32US2HcRFdVHbER4='; "
+      "style-src 'sha256-EjixCmbU5VI4SexUFBLu5k4IDdN+JRiJ/L70jSmJPfw='; "
+      "img-src data:; "
+      "connect-src 'self'; "
+      "form-action 'none'; "
+      "frame-ancestors 'none'");
   httpd_resp_sendstr(req, WIFI_PROV_PAGE);
   return ESP_OK;
 }

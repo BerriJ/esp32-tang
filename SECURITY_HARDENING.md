@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medium, and 6 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated in release mode**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled** (including SoftAP provisioning), **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining open items are medium-priority: V16 (CSRF on /reboot — accepted) and low-priority: V24 (no CSP on provisioning page). OTA has been declined — physical access is always available, and serial flashing via Secure Boot is sufficient.
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medium, and 6 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated in release mode**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled** (including SoftAP provisioning), **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining open item is medium-priority: V16 (CSRF on /reboot — accepted). All low-severity items have been resolved. OTA has been declined — physical access is always available, and serial flashing via Secure Boot is sufficient.
 
 ---
 
@@ -105,9 +105,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medi
 
 ### LOW (P3)
 
-**V24. No CSP headers on WiFi provisioning page**
-- Files: `main/wifi_prov_handlers.h` (`handle_prov_root`)
-- Impact: The provisioning page at `http://192.168.4.1/` has no Content-Security-Policy headers, unlike the main ZK web UI. Low risk because the page is only served during initial SoftAP setup and handles no sensitive data beyond WiFi credentials.
+**V24. ~~No CSP headers on WiFi provisioning page~~ FIXED**
+- **Status: `handle_prov_root` now sends a strict CSP header with SHA-256 hashes for the inline style and script blocks, matching the same policy pattern as the main ZK web UI.**
+- ~~Impact: The provisioning page had no Content-Security-Policy headers.~~
 
 **V25. ~~No request body size limit on `/rec` endpoint~~ FIXED**
 - **Status: `perform_rec` now rejects requests with `content_len == 0` or `content_len > 1024` before allocation. 1 KiB is generous for a P-256 JWK (~256 bytes typical).**
@@ -320,7 +320,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medi
 | ~~19~~   | ~~WiFi provisioning~~ ✅                         | V21  | —      | Done                  |
 | ~~20~~   | ~~Unique mDNS hostname~~ ✅                      | V22  | —      | Done                  |
 | ~~21~~   | ~~Encrypt SoftAP provisioning~~ ✅               | V23  | —      | Done                  |
-| 22       | Add CSP to provisioning page                    | V24  | Low    | Yes                   |
+| ~~22~~   | ~~Add CSP to provisioning page~~ ✅              | V24  | —      | Done                  |
 | ~~23~~   | ~~Cap `/rec` body size~~ ✅                      | V25  | —      | Done                  |
 
 ---
