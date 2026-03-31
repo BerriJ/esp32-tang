@@ -1,16 +1,19 @@
 menu "Wi-Fi Credentials"
 
 config WIFI_SSID
-    string "Wi-Fi SSID"
+    string "Wi-Fi SSID (compile-time fallback)"
     default ""
     help
-        SSID of the Wi-Fi network to connect to.
+        Optional compile-time fallback SSID. WiFi credentials stored in NVS
+        (via SoftAP provisioning) take priority over this value.
+        Leave empty to always use SoftAP provisioning.
 
 config WIFI_PASSWORD
-    string "Wi-Fi Password"
+    string "Wi-Fi Password (compile-time fallback)"
     default ""
     help
-        Password for the Wi-Fi network.
+        Optional compile-time fallback password. WiFi credentials stored in NVS
+        (via SoftAP provisioning) take priority over this value.
 
 endmenu
 

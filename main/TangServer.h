@@ -21,15 +21,14 @@ static const char *TAG = "TangServer";
 #include "provision_handlers.h"
 #include "tang_handlers.h"
 #include "tang_storage.h"
+#include "wifi_prov_handlers.h"
 #include "zk_auth.h"
 #include "zk_handlers.h"
 
-// --- Configuration ---
-const char *wifi_ssid = CONFIG_WIFI_SSID;
-const char *wifi_password = CONFIG_WIFI_PASSWORD;
-
 // --- Global State ---
 bool unlocked = false;
+static bool provisioning_mode = false;
+static char device_hostname[64] = DEFAULT_HOSTNAME;
 httpd_handle_t server_http = NULL;
 httpd_handle_t server_https = NULL;
 TangKeyStore keystore;
@@ -101,8 +100,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
   }
 }
 
-// --- WiFi Setup ---
-void setup_wifi() {
+// --- WiFi STA Setup (normal mode) ---
+void setup_wifi_sta(const char *ssid, const char *password,
+                    const char *hostname) {
   wifi_event_group = xEventGroupCreate();
 
   ESP_ERROR_CHECK(esp_netif_init());
@@ -110,7 +110,7 @@ void setup_wifi() {
   esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
   assert(sta_netif);
 
-  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, "esp-tang-lol"));
+  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, hostname));
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -121,21 +121,58 @@ void setup_wifi() {
                                              &wifi_event_handler, NULL));
 
   wifi_config_t wifi_config = {};
-  if (strlen(wifi_ssid) > 0) {
-    strncpy((char *)wifi_config.sta.ssid, wifi_ssid,
-            sizeof(wifi_config.sta.ssid));
-    strncpy((char *)wifi_config.sta.password, wifi_password,
-            sizeof(wifi_config.sta.password));
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+  strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+  strncpy((char *)wifi_config.sta.password, password,
+          sizeof(wifi_config.sta.password));
+  wifi_config.sta.threshold.authmode =
+      strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+  ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Connecting to SSID: %s", wifi_ssid);
+  ESP_LOGI(TAG, "Connecting to SSID: %s (hostname: %s)", ssid, hostname);
+}
+
+// --- WiFi SoftAP Setup (provisioning mode) ---
+void setup_wifi_ap() {
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_create_default_wifi_ap();
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+  wifi_config_t ap_config = {};
+  strncpy((char *)ap_config.ap.ssid, "ESP-Tang-Setup",
+          sizeof(ap_config.ap.ssid));
+  ap_config.ap.ssid_len = strlen("ESP-Tang-Setup");
+  ap_config.ap.max_connection = 2;
+  ap_config.ap.authmode = WIFI_AUTH_OPEN;
+  ap_config.ap.channel = 1;
+
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+  ESP_ERROR_CHECK(esp_wifi_start());
+
+  ESP_LOGI(TAG, "Provisioning SoftAP started: SSID='ESP-Tang-Setup'");
+  ESP_LOGI(TAG, "Connect and visit http://192.168.4.1");
+}
+
+// --- Provisioning HTTP Server ---
+httpd_handle_t setup_provisioning_server() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.stack_size = 8192;
+  config.max_uri_handlers = 4;
+
+  httpd_handle_t server = NULL;
+  if (httpd_start(&server, &config) == ESP_OK) {
+    register_wifi_prov_handlers(server);
+    ESP_LOGI(TAG, "Provisioning server listening on port 80");
   } else {
-    ESP_LOGI(TAG, "No WiFi SSID configured");
+    ESP_LOGE(TAG, "Failed to start provisioning server");
   }
+  return server;
 }
 
 // Embedded TLS certificate and private key (via EMBED_TXTFILES)
@@ -284,16 +321,49 @@ void setup() {
     ESP_LOGW(TAG, "ZK Auth initialization failed");
   }
 
-  // 6. WiFi — wait for IP before starting servers
-  setup_wifi();
-  server_http = setup_plain_http_server();
-  server_https = setup_https_server();
+  // 6. Determine WiFi configuration: NVS → Kconfig fallback → SoftAP
+  char wifi_ssid[33] = {};
+  char wifi_password[65] = {};
+  char hostname[64] = {};
 
-  if (server_http && server_https) {
-    ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
-    ESP_LOGI(TAG, "  ZK Auth UI:  https://<ip>/");
-    ESP_LOGI(TAG, "  Tang /adv:   http://<ip>/adv");
-    ESP_LOGI(TAG, "  Tang /rec:   http://<ip>/rec  (requires activation)");
+  bool has_nvs_wifi = read_wifi_config_from_nvs(
+      wifi_ssid, sizeof(wifi_ssid), wifi_password, sizeof(wifi_password),
+      hostname, sizeof(hostname));
+
+  // Fall back to Kconfig values if NVS has no WiFi config
+  if (!has_nvs_wifi && strlen(CONFIG_WIFI_SSID) > 0) {
+    strncpy(wifi_ssid, CONFIG_WIFI_SSID, sizeof(wifi_ssid) - 1);
+    strncpy(wifi_password, CONFIG_WIFI_PASSWORD, sizeof(wifi_password) - 1);
+    ESP_LOGI(TAG, "Using compile-time WiFi credentials");
+  }
+
+  // Apply hostname (NVS value or default)
+  if (strlen(hostname) > 0) {
+    strncpy(device_hostname, hostname, sizeof(device_hostname) - 1);
+  }
+
+  if (strlen(wifi_ssid) > 0) {
+    // Normal mode — connect to WiFi and start servers
+    setup_wifi_sta(wifi_ssid, wifi_password, device_hostname);
+    server_http = setup_plain_http_server();
+    server_https = setup_https_server();
+
+    if (server_http && server_https) {
+      ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
+      ESP_LOGI(TAG, "  Hostname:    %s", device_hostname);
+      ESP_LOGI(TAG, "  ZK Auth UI:  https://<ip>/");
+      ESP_LOGI(TAG, "  Tang /adv:   http://<ip>/adv");
+      ESP_LOGI(TAG, "  Tang /rec:   http://<ip>/rec  (requires activation)");
+    }
+  } else {
+    // Provisioning mode — no WiFi configured, start SoftAP
+    provisioning_mode = true;
+    setup_wifi_ap();
+    setup_provisioning_server();
+
+    ESP_LOGI(TAG, "=== WiFi Provisioning Mode ===");
+    ESP_LOGI(TAG, "  Connect to WiFi: ESP-Tang-Setup");
+    ESP_LOGI(TAG, "  Then visit:      http://192.168.4.1");
   }
 }
 

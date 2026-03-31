@@ -1,10 +1,6 @@
 # Target Configuration
 CONFIG_IDF_TARGET="esp32c6"
 
-# WiFi Configuration
-CONFIG_WIFI_SSID="DoNotSetTheRealValueHere"
-CONFIG_WIFI_PASSWORD="PutTheRealPassInTheSdkconfigFile"
-
 # TEE (Trusted Execution Environment)
 CONFIG_SECURE_ENABLE_TEE=y
 CONFIG_SECURE_TEE_ATTESTATION=y

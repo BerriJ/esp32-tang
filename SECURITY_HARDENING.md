@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, WiFi provisioning, unique mDNS hostname, CSRF protection for /reboot).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, CSRF protection for /reboot).
 
 ---
 
@@ -114,13 +114,15 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/tang_storage.h` (`exc_pub_nvs_key`)
 - ~~Impact: Unlikely issue given single-threaded HTTP server, but poor practice.~~
 
-**V21. WiFi credentials in sdkconfig**
-- Files: `sdkconfig` (`CONFIG_WIFI_SSID`, `CONFIG_WIFI_PASSWORD`)
-- Impact: Credentials visible in source control and flash dumps.
+**V21. ~~WiFi credentials in sdkconfig~~ FIXED**
+- **Status: WiFi provisioning via SoftAP implemented. Credentials are stored in NVS at runtime, not compiled into firmware. Kconfig values serve as optional compile-time fallback. Hostname is also configurable during provisioning (default: `esp-tang`).**
+- Files: `main/TangServer.h`, `main/wifi_prov_handlers.h`, `main/wifi_prov_page.h`, `main/Kconfig.projbuild`
+- ~~Impact: Credentials visible in source control and flash dumps.~~
 
-**V22. No mDNS/hostname collision protection**
-- Files: `main/TangServer.h` (hostname "esp-tang-lol")
-- Impact: Hostname spoofing on local network.
+**V22. ~~No mDNS/hostname collision protection~~ FIXED**
+- **Status: Hostname is user-configurable during SoftAP provisioning. Default hostname changed from `esp-tang-lol` to `esp-tang`. Stored in NVS, validated to RFC 1123 (alphanumeric + hyphens, max 63 chars).**
+- Files: `main/TangServer.h`, `main/wifi_prov_handlers.h`
+- ~~Impact: Hostname spoofing on local network.~~
 
 ---
 
@@ -263,41 +265,45 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Pair with Secure Boot to ensure only signed updates are accepted
 - Fixes: V15
 
-**Step 4.2: Externalize WiFi credentials**
-- Use ESP-IDF provisioning (BLE or SoftAP) instead of hardcoded sdkconfig values
-- Or use NVS-stored credentials set via a provisioning endpoint
+**Step 4.2: ~~Externalize WiFi credentials~~ DONE**
+- ✅ SoftAP provisioning implemented. Device starts as `ESP-Tang-Setup` AP when no WiFi is configured.
+- ✅ User connects to SoftAP, visits `http://192.168.4.1`, provides SSID, password, and hostname.
+- ✅ Credentials stored in NVS (`tang_wifi` namespace), Kconfig values serve as compile-time fallback.
+- ✅ Device reboots into STA mode after provisioning.
 - Fixes: V21
 
-**Step 4.3: Use mDNS with unique hostname**
-- Use device MAC or serial in hostname to avoid collisions
+**Step 4.3: ~~Use mDNS with unique hostname~~ DONE**
+- ✅ Hostname is user-settable during SoftAP provisioning (default: `esp-tang`).
+- ✅ Stored in NVS, applied via `esp_netif_set_hostname()` on boot.
+- ✅ Validated: alphanumeric + hyphens, max 63 chars (RFC 1123).
 - Fixes: V22
 
 ---
 
 ## Prioritized Action List
 
-| Priority | Action                                          | Vuln | Effort  | Reversible?      |
-| -------- | ----------------------------------------------- | ---- | ------- | ---------------- |
-| ~~1~~    | ~~Enable Secure Boot V2~~ ✅                     | V2   | —       | Done             |
-| ~~2~~    | ~~Enable Flash Encryption~~ ✅                   | V3   | —       | Done             |
-| ~~3~~    | ~~Enable HTTPS~~ ✅                              | V1   | —       | Done             |
-| ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —       | N/A (accepted)   |
-| ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —       | Done             |
-| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —       | Done (breaking)  |
-| ~~7~~    | ~~Remove console.log secrets~~ ✅                | V13  | —       | Done             |
-| ~~8~~    | ~~Add SRI / bundle crypto libs~~ ✅              | V8   | —       | Done             |
-| ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —       | Done             |
-| ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —       | Done (automatic) |
-| ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —       | Done             |
-| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —       | Done (breaking)  |
-| ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —       | Done             |
-| ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —       | Done             |
-| ~~15~~   | ~~WiFi backoff~~ ✅                              | V17  | —       | Done             |
-| ~~16~~   | ~~Release build optimization~~ ✅                | V19  | —       | Done             |
-| ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —       | Done             |
-| 18       | Secure OTA                                      | V15  | High    | Yes              |
-| 19       | WiFi provisioning                               | V21  | Medium  | Yes              |
-| 20       | Unique mDNS hostname                            | V22  | Trivial | Yes              |
+| Priority | Action                                          | Vuln | Effort | Reversible?      |
+| -------- | ----------------------------------------------- | ---- | ------ | ---------------- |
+| ~~1~~    | ~~Enable Secure Boot V2~~ ✅                     | V2   | —      | Done             |
+| ~~2~~    | ~~Enable Flash Encryption~~ ✅                   | V3   | —      | Done             |
+| ~~3~~    | ~~Enable HTTPS~~ ✅                              | V1   | —      | Done             |
+| ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —      | N/A (accepted)   |
+| ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —      | Done             |
+| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —      | Done (breaking)  |
+| ~~7~~    | ~~Remove console.log secrets~~ ✅                | V13  | —      | Done             |
+| ~~8~~    | ~~Add SRI / bundle crypto libs~~ ✅              | V8   | —      | Done             |
+| ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —      | Done             |
+| ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —      | Done (automatic) |
+| ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —      | Done             |
+| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —      | Done (breaking)  |
+| ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —      | Done             |
+| ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —      | Done             |
+| ~~15~~   | ~~WiFi backoff~~ ✅                              | V17  | —      | Done             |
+| ~~16~~   | ~~Release build optimization~~ ✅                | V19  | —      | Done             |
+| ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —      | Done             |
+| 18       | Secure OTA                                      | V15  | High   | Yes              |
+| ~~19~~   | ~~WiFi provisioning~~ ✅                         | V21  | —      | Done             |
+| ~~20~~   | ~~Unique mDNS hostname~~ ✅                      | V22  | —      | Done             |
 
 ---
 
