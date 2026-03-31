@@ -69,9 +69,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 ### MEDIUM (P2)
 
-**V12. No Content-Security-Policy headers on web UI**
-- Files: `main/zk_web_page.h` (HTML), `main/zk_handlers.h` (`handle_zk_root`)
-- Impact: XSS vectors if any user input is reflected. Also allows loading of arbitrary external resources.
+**V12. ~~No Content-Security-Policy headers on web UI~~ FIXED**
+- **Status: Strict CSP added to `handle_zk_root`. Policy: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'`. No external resources permitted. No CDN scripts. Only inline JS/CSS (single-page app) and same-origin fetch() allowed.**
+- Files: `main/zk_handlers.h` (`handle_zk_root`)
+- ~~Impact: XSS vectors if any user input is reflected. Also allows loading of arbitrary external resources.~~
 
 **V13. ~~Console.log exposes cryptographic secrets in browser~~ FIXED**
 - **Status: All console.log statements exposing secrets removed during Web Crypto API migration. Only non-sensitive status messages remain.**
@@ -208,9 +209,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Served via `/api/identity` `salt` field; no NVS storage needed (read from eFuse).
 - Fixes: V9
 
-**Step 3.6: Add Content-Security-Policy headers**
-- Add CSP header to `handle_zk_root`: `default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'`
-- Better: bundle crypto-js and elliptic.js inline (already partially done) and use strict CSP
+**Step 3.6: ~~Add Content-Security-Policy headers~~ DONE**
+- ✅ Strict CSP header added to `handle_zk_root`: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'`.
+- No CDN allowlist needed — all crypto uses native Web Crypto API. Only inline script/style and same-origin API calls permitted.
 - Fixes: V12
 
 **Step 3.7: ~~Add SRI to CDN script tags~~ DONE (bundled instead)**
@@ -279,7 +280,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —       | Done (automatic) |
 | ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —       | Done             |
 | ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —       | Done (breaking)  |
-| 13       | Add CSP headers                                 | V12  | Trivial | Yes              |
+| ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —       | Done             |
 | 14       | Increase DPA protection                         | V14  | Trivial | Yes              |
 | 15       | WiFi backoff                                    | V17  | Low     | Yes              |
 | 16       | Release build optimization                      | V19  | Trivial | Yes              |
