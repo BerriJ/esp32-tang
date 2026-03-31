@@ -25,15 +25,16 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `sdkconfig` (`CONFIG_SECURE_FLASH_ENC_ENABLED`)
 - ~~Impact: Physical attacker can dump flash to extract: WiFi credentials (SSID/password in plaintext), KDF salt (enables offline password brute-force against the HMAC-locked eFuse), public keys, and full firmware for reverse engineering.~~
 
-**V4. Unauthenticated destructive endpoints**
+**V4. ~~Unauthenticated destructive endpoints~~ ACCEPTED**
+- **Status: Accepted risk. Design decision: the Tang server should be easy to deactivate (lock/reboot) but hard to activate (unlock requires password + ECIES + rate limiting). Lock/reboot are DoS-only — exchange keys remain safely in TEE NVS.**
 - Files: `main/tang_handlers.h` (`handle_reboot`), `main/zk_handlers.h` (`handle_zk_lock`), `main/provision_handlers.h` (`handle_provision_api`)
-- Impact: Any device on the network can `GET /reboot` to crash the server, `POST /api/lock` to clear the TEE activated flag (DoS — exchange keys remain safely in TEE NVS but the device requires re-authentication), or race `POST /api/provision` on a fresh device to provision a known eFuse key.
 
 ### HIGH (P1)
 
-**V5. No rate limiting on password attempts**
-- Files: `main/zk_auth.h` (`process_unlock`)
-- Impact: Unlimited brute-force attempts. PBKDF2 iterations have been increased to 600,000 (OWASP 2023 recommended minimum for SHA-256), but rate limiting is still needed to prevent online brute-force.
+**V5. ~~No rate limiting on password attempts~~ FIXED**
+- **Status: Exponential backoff rate limiting added to `process_unlock` and `process_change_password`. Backoff doubles per failure (1s, 2s, 4s...) capped at 5 minutes. Resets on successful auth. HTTP 429 returned when rate-limited.**
+- Files: `main/zk_auth.h` (`process_unlock`, `process_change_password`)
+- ~~Impact: Unlimited brute-force attempts. PBKDF2 iterations have been increased to 600,000 (OWASP 2023 recommended minimum for SHA-256), but rate limiting is still needed to prevent online brute-force.~~
 
 **V6. ~~PBKDF2 iteration count too low (10,000)~~ FIXED**
 - **Status: PBKDF2 iterations increased to 600,000.**
@@ -175,11 +176,12 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 ### Phase 3: Application-Layer Hardening
 *Depends on: nothing (can be done in parallel)*
 
-**Step 3.1: Add rate limiting to authentication endpoints**
-- Add to `main/zk_auth.h`: track failed attempts per IP or globally
-- Implement exponential backoff: 1s, 2s, 4s, 8s... after failed attempts
-- Lock out after N consecutive failures (e.g., 10) for a cooldown period
-- Consider using a simple counter + timer in `ZKAuth` class
+**Step 3.1: ~~Add rate limiting to authentication endpoints~~ DONE**
+- ✅ Global exponential backoff in `ZKAuth`: 1s, 2s, 4s, 8s... capped at 5 minutes.
+- Applied to `process_unlock` and `process_change_password`.
+- HTTP 429 returned with `retry_after` seconds when rate-limited.
+- Status endpoint (`/api/status`) exposes `failed_attempts` and `retry_after`.
+- Resets on successful authentication.
 - Fixes: V5
 
 **Step 3.2: ~~Increase PBKDF2 iterations to 600,000~~ DONE**
@@ -187,13 +189,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - NOTE: This is a breaking change — existing password hashes will differ. Requires password re-enrollment.
 - Fixes: V6
 
-**Step 3.3: Authenticate destructive endpoints**
-- `/reboot`: require POST + password hash via ECIES (like rotate)
-- `/api/lock`: require password hash via ECIES (like rotate)
-- `/api/provision`: only allow during first boot (check eFuse status; if already provisioned, reject)
-- `/api/provision/status`: OK to leave unauthenticated (read-only)
-- Modify: `main/tang_handlers.h`, `main/zk_handlers.h`, `main/provision_handlers.h`
-- Fixes: V4, V16
+**Step 3.3: ~~Authenticate destructive endpoints~~ REMOVED**
+- Design decision: Tang server should be easy to deactivate but hard to activate.
+- Lock/reboot are DoS-only — keys remain safe in TEE NVS.
+- ~~Fixes: V4, V16~~
 
 **Step 3.4: Restrict CORS**
 - Replace `Access-Control-Allow-Origin: *` with the device's own origin or remove CORS entirely (web UI is same-origin)
@@ -266,8 +265,8 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~1~~    | ~~Enable Secure Boot V2~~ ✅              | V2   | —       | Done             |
 | ~~2~~    | ~~Enable Flash Encryption~~ ✅            | V3   | —       | Done             |
 | 3        | Enable HTTPS                             | V1   | Medium  | Yes              |
-| 4        | Authenticate destructive endpoints       | V4   | Low     | Yes              |
-| 5        | Add rate limiting                        | V5   | Low     | Yes              |
+| ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —       | N/A (accepted)   |
+| ~~5~~    | ~~Add rate limiting~~ ✅                  | V5   | —       | Done             |
 | ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅ | V6   | —       | Done (breaking)  |
 | 7        | Remove console.log secrets               | V13  | Trivial | Yes              |
 | 8        | Add SRI / bundle crypto libs             | V8   | Low     | Yes              |

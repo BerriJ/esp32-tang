@@ -18,6 +18,8 @@
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
+#include <esp_timer.h>
+#include <inttypes.h>
 #include <string.h>
 
 // Zero-Knowledge Authentication Module
@@ -44,6 +46,54 @@ private:
   uint8_t device_public_key[65]; // Uncompressed P-256: 0x04 + X(32) + Y(32)
 
   bool initialized;
+
+  // Rate limiting state
+  uint32_t failed_attempts;
+  int64_t lockout_until_us; // esp_timer microsecond timestamp
+
+  static constexpr uint32_t MAX_BACKOFF_SECS = 300; // 5 minutes cap
+
+  // Returns the lockout duration in seconds for the given failure count.
+  static uint32_t backoff_secs(uint32_t failures) {
+    if (failures == 0)
+      return 0;
+    // 2^(failures-1) seconds, capped at MAX_BACKOFF_SECS
+    uint32_t secs = 1u << (failures - 1 > 30 ? 30 : failures - 1);
+    return secs > MAX_BACKOFF_SECS ? MAX_BACKOFF_SECS : secs;
+  }
+
+  // Check if rate-limited. If so, sets *error_json with retry_after and returns true.
+  bool check_rate_limit(char **error_json) {
+    int64_t now = esp_timer_get_time();
+    if (now < lockout_until_us) {
+      uint32_t remaining =
+          (uint32_t)((lockout_until_us - now + 999999) / 1000000);
+      char buf[128];
+      snprintf(buf, sizeof(buf),
+               "{\"error\":\"Too many attempts\",\"retry_after\":%" PRIu32 "}",
+               remaining);
+      *error_json = strdup(buf);
+      ESP_LOGW(TAG_ZK_AUTH, "Rate limited: %" PRIu32 " seconds remaining", remaining);
+      return true;
+    }
+    return false;
+  }
+
+  // Record a failed authentication attempt and set the lockout window.
+  void record_failure() {
+    failed_attempts++;
+    uint32_t delay = backoff_secs(failed_attempts);
+    lockout_until_us = esp_timer_get_time() + (int64_t)delay * 1000000;
+    ESP_LOGW(TAG_ZK_AUTH,
+             "Auth failure #%" PRIu32 " \u2014 next attempt allowed in %" PRIu32 " s",
+             failed_attempts, delay);
+  }
+
+  // Reset rate limiting after a successful authentication.
+  void record_success() {
+    failed_attempts = 0;
+    lockout_until_us = 0;
+  }
 
   static void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex) {
     for (size_t i = 0; i < bin_len; i++) {
@@ -262,7 +312,7 @@ private:
   }
 
 public:
-  ZKAuth() : initialized(false) {
+  ZKAuth() : initialized(false), failed_attempts(0), lockout_until_us(0) {
     mbedtls_ecp_group_init(&grp);
     mbedtls_mpi_init(&device_private_d);
     mbedtls_ecp_point_init(&device_public_Q);
@@ -350,13 +400,25 @@ public:
     return json_str;
   }
 
-  // Process unlock request with ECIES tunnel.
-  // After decryption, password_hash is passed to TEE for key derivation.
+  // Returns seconds until next attempt is allowed, or 0 if not rate-limited.
+  uint32_t rate_limit_remaining() const {
+    int64_t now = esp_timer_get_time();
+    if (now < lockout_until_us)
+      return (uint32_t)((lockout_until_us - now + 999999) / 1000000);
+    return 0;
+  }
+
+  uint32_t get_failed_attempts() const { return failed_attempts; }
+
   char *process_unlock(const char *json_payload, bool *success_out) {
     *success_out = false;
 
     if (!initialized)
       return strdup("{\"error\":\"Not initialized\"}");
+
+    char *rate_err = NULL;
+    if (check_rate_limit(&rate_err))
+      return rate_err;
 
     ESP_LOGI(TAG_ZK_AUTH, "Processing unlock request");
 
@@ -392,10 +454,12 @@ public:
     free(decrypted);
 
     if (verification_result) {
+      record_success();
       keystore.activated = true;
       unlocked = true;
       ESP_LOGI(TAG_ZK_AUTH, "Password verification successful");
     } else {
+      record_failure();
       keystore.wipe_secrets();
       unlocked = false;
       ESP_LOGW(TAG_ZK_AUTH, "Password verification failed");
@@ -406,6 +470,11 @@ public:
     cJSON_AddStringToObject(resp_doc, verification_result ? "message" : "error",
                             verification_result ? "Unlock successful"
                                                 : "Invalid password");
+    if (!verification_result) {
+      uint32_t retry = rate_limit_remaining();
+      if (retry > 0)
+        cJSON_AddNumberToObject(resp_doc, "retry_after", retry);
+    }
 
     char *response_str = cJSON_PrintUnformatted(resp_doc);
     cJSON_Delete(resp_doc);
@@ -426,6 +495,10 @@ public:
       return strdup("{\"error\":\"Not initialized\"}");
     if (!unlocked)
       return strdup("{\"error\":\"Device not unlocked\"}");
+
+    char *rate_err = NULL;
+    if (check_rate_limit(&rate_err))
+      return rate_err;
 
     ESP_LOGI(TAG_ZK_AUTH, "Processing password change");
 
@@ -465,6 +538,8 @@ public:
 
     if (err != ESP_OK) {
       mbedtls_platform_zeroize(new_salt, sizeof(new_salt));
+      if (err == ESP_ERR_INVALID_ARG)
+        record_failure();
       ESP_LOGW(TAG_ZK_AUTH, "Password change failed: %s", esp_err_to_name(err));
       return strdup(
           err == ESP_ERR_INVALID_ARG

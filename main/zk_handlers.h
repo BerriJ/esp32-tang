@@ -18,7 +18,11 @@ static void send_json_response(httpd_req_t *req, const char *json,
                                bool success) {
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
+  // Use 429 for rate-limited responses (detected by retry_after in JSON)
+  if (!success && strstr(json, "retry_after"))
+    httpd_resp_set_status(req, "429 Too Many Requests");
+  else
+    httpd_resp_set_status(req, success ? "200 OK" : "400 Bad Request");
   httpd_resp_sendstr(req, json);
 }
 
@@ -78,12 +82,15 @@ static esp_err_t handle_zk_unlock(httpd_req_t *req) {
 
 static esp_err_t handle_zk_status(httpd_req_t *req) {
   unsigned long uptime_ms = esp_timer_get_time() / 1000;
-  char response[192];
+  uint32_t retry_after = zk_auth.rate_limit_remaining();
+  char response[256];
   snprintf(response, sizeof(response),
-           "{\"unlocked\":%s,\"configured\":%s,\"gen\":%u,\"uptime\":%lu}",
+           "{\"unlocked\":%s,\"configured\":%s,\"gen\":%u,\"uptime\":%lu,"
+           "\"failed_attempts\":%u,\"retry_after\":%u}",
            zk_auth.is_unlocked() ? "true" : "false",
            keystore.has_exchange_key() ? "true" : "false", keystore.gen,
-           uptime_ms);
+           uptime_ms, (unsigned)zk_auth.get_failed_attempts(),
+           (unsigned)retry_after);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
