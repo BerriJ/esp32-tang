@@ -106,6 +106,15 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             box-shadow: 0 0 0 3px rgba(90, 125, 90, 0.1);
         }
         
+        /* Prevent browser autofill from injecting inline styles */
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus {
+            -webkit-box-shadow: 0 0 0 1000px white inset;
+            box-shadow: 0 0 0 1000px white inset;
+            transition: background-color 5000s ease-in-out 0s;
+        }
+        
         .btn {
             width: 100%;
             padding: 14px;
@@ -380,32 +389,61 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
         .warning-box strong {
             color: #e65100;
         }
+
+        .icon-lg {
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        .icon-sm {
+            vertical-align: middle;
+            margin-right: 2px;
+        }
+
+        .success-title {
+            color: #2e7d32;
+            margin-bottom: 10px;
+        }
+
+        .success-subtitle {
+            color: #666;
+        }
+
+        .mb-10 {
+            margin-bottom: 10px;
+        }
+
+        .mt-10 {
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="container" id="mainContainer">
         <div id="unlockPage" class="unlock-page">
-            <h1><svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 8px;"><path d="M13 2H6.5A2.5 2.5 0 0 0 4 4.5v15"/><path d="M17 2v6"/><path d="M17 4h2"/><path d="M20 15.2V21a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><circle cx="17" cy="10" r="2"/></svg>Zero-Knowledge Auth</h1>
+            <h1><svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-lg"><path d="M13 2H6.5A2.5 2.5 0 0 0 4 4.5v15"/><path d="M17 2v6"/><path d="M17 4h2"/><path d="M20 15.2V21a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><circle cx="17" cy="10" r="2"/></svg>Zero-Knowledge Auth</h1>
             <p class="subtitle" id="unlockSubtitle">ESP32-C6 Secure Unlock</p>
             
             <div class="setup-box" id="setupNotice">
-                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> First-Time Setup:</strong> This device has not been initialized yet.
+                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> First-Time Setup:</strong> This device has not been initialized yet.
                 Choose a strong password to generate the Tang encryption keys. This password will be required to unlock the device on every boot.
             </div>
             
             <div class="info-box">
-                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 2px;"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Privacy First:</strong> Your password is never transmitted. 
+                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Privacy First:</strong> Your password is never transmitted. 
                 The device only receives an encrypted, derived key over an ECIES tunnel.
             </div>
             
+            <form id="unlockForm">
             <div class="form-group">
                 <label for="password">Password</label>
                 <input type="password" id="password" placeholder="Enter your password" autocomplete="off">
             </div>
             
-            <button class="btn" onclick="performSecureUnlock()" id="unlockBtn">
+            <button type="submit" class="btn" id="unlockBtn">
                 <span id="unlockBtnText">Unlock Device</span>
             </button>
+            </form>
             
             <div id="status"></div>
         </div>
@@ -417,8 +455,8 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                         <path d="M14 27l7.5 7.5L38 18"/>
                     </svg>
                 </div>
-                <h2 style="color: #2e7d32; margin-bottom: 10px;">Device Unlocked!</h2>
-                <p style="color: #666;">Authentication successful</p>
+                <h2 class="success-title">Device Unlocked!</h2>
+                <p class="success-subtitle">Authentication successful</p>
             </div>
             
             <div class="status-card">
@@ -448,13 +486,13 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                     <span class="status-value" id="uptime">--</span>
                 </div>
             </div>
-            <button class="btn" onclick="showChangePasswordPage()" style="margin-bottom: 10px;">
+            <button class="btn mb-10" id="changePasswordBtn">
                 Change Password
             </button>
-            <button class="btn" onclick="showRotatePage()" style="margin-bottom: 10px;">
+            <button class="btn mb-10" id="rotateKeysBtn">
                 Rotate Keys
             </button>
-            <button class="btn btn-secondary" onclick="lockDevice()">
+            <button class="btn btn-secondary" id="lockBtn">
                 Lock Device
             </button>
         </div>
@@ -464,9 +502,10 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             <p class="subtitle">Update password and rotate Tang keys</p>
             
             <div class="warning-box">
-                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Key Rotation:</strong> Changing the password will generate new Tang encryption keys. Clients bound to the old keys will need to be re-enrolled.
+                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Key Rotation:</strong> Changing the password will generate new Tang encryption keys. Clients bound to the old keys will need to be re-enrolled.
             </div>
             
+            <form id="changePasswordForm">
             <div class="form-group">
                 <label for="currentPassword">Current Password</label>
                 <input type="password" id="currentPassword" placeholder="Enter current password" autocomplete="off">
@@ -477,13 +516,14 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                 <input type="password" id="newPassword" placeholder="Enter new password" autocomplete="off">
             </div>
             
-            <button class="btn" onclick="performPasswordChange()" id="changeBtn">
+            <button type="submit" class="btn" id="changeBtn">
                 Change Password
             </button>
+            </form>
             
             <div id="changeStatus"></div>
             
-            <button class="btn btn-secondary" onclick="backToStatus()" style="margin-top: 10px;">
+            <button class="btn btn-secondary mt-10" id="backFromChangeBtn">
                 Back
             </button>
         </div>
@@ -493,21 +533,23 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             <p class="subtitle">Advance to next exchange key generation</p>
             
             <div class="info-box">
-                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 2px;"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Key Rotation:</strong> This will generate a new exchange key and drop the oldest one. Existing clients using recent keys will continue to work.
+                <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Key Rotation:</strong> This will generate a new exchange key and drop the oldest one. Existing clients using recent keys will continue to work.
             </div>
             
+            <form id="rotateForm">
             <div class="form-group">
                 <label for="rotatePassword">Password</label>
                 <input type="password" id="rotatePassword" placeholder="Enter your password" autocomplete="off">
             </div>
             
-            <button class="btn" onclick="performRotate()" id="rotateBtn">
+            <button type="submit" class="btn" id="rotateBtn">
                 Rotate Keys
             </button>
+            </form>
             
             <div id="rotateStatus"></div>
             
-            <button class="btn btn-secondary" onclick="backToStatusFromRotate()" style="margin-top: 10px;">
+            <button class="btn btn-secondary mt-10" id="backFromRotateBtn">
                 Back
             </button>
         </div>
@@ -998,6 +1040,15 @@ window.addEventListener('pageshow', (event) => {
         if (passwordInput) passwordInput.value = '';
     }
 });
+
+document.getElementById('unlockForm').addEventListener('submit', (e) => { e.preventDefault(); performSecureUnlock(); });
+document.getElementById('changePasswordBtn').addEventListener('click', showChangePasswordPage);
+document.getElementById('rotateKeysBtn').addEventListener('click', showRotatePage);
+document.getElementById('lockBtn').addEventListener('click', lockDevice);
+document.getElementById('changePasswordForm').addEventListener('submit', (e) => { e.preventDefault(); performPasswordChange(); });
+document.getElementById('backFromChangeBtn').addEventListener('click', backToStatus);
+document.getElementById('rotateForm').addEventListener('submit', (e) => { e.preventDefault(); performRotate(); });
+document.getElementById('backFromRotateBtn').addEventListener('click', backToStatusFromRotate);
     </script>
 </body>
 </html>

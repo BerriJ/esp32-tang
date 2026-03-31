@@ -56,13 +56,16 @@ static esp_err_t handle_zk_post(httpd_req_t *req, zk_processor_t processor) {
 // Serve the main web interface
 static esp_err_t handle_zk_root(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
-  httpd_resp_set_hdr(req, "Content-Security-Policy",
-                     "default-src 'none'; "
-                     "script-src 'unsafe-inline'; "
-                     "style-src 'unsafe-inline'; "
-                     "connect-src 'self'; "
-                     "form-action 'none'; "
-                     "frame-ancestors 'none'");
+  httpd_resp_set_hdr(
+      req, "Content-Security-Policy",
+      "default-src 'none'; "
+      "script-src 'sha256-4EIXEcaYtzU4J6BPfleZ/v2My6gqdTeYs/oWs6YFBOc='; "
+      "style-src 'sha256-Ygfpm+Dkf4yXWYGTg37s54h4L6HdUmrYB+fhGl47+qc=' "
+      "'unsafe-hashes' 'sha256-vdSyDjhE3ZMSkQMKmAlr9J2BmPtY//4BwPgxvF99yZE='; "
+      "img-src data:; "
+      "connect-src 'self'; "
+      "form-action 'none'; "
+      "frame-ancestors 'none'");
   httpd_resp_sendstr(req, ZK_WEB_PAGE);
   return ESP_OK;
 }

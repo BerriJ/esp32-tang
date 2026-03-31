@@ -70,7 +70,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 ### MEDIUM (P2)
 
 **V12. ~~No Content-Security-Policy headers on web UI~~ FIXED**
-- **Status: Strict CSP added to `handle_zk_root`. Policy: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'`. No external resources permitted. No CDN scripts. Only inline JS/CSS (single-page app) and same-origin fetch() allowed.**
+- **Status: Strict hash-based CSP added to `handle_zk_root`. Policy uses `'sha256-...'` hashes for inline script and style blocks — no `'unsafe-inline'` needed. `default-src 'none'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'`. Hashes must be recomputed if JS/CSS changes (`python3 compute_csp_hashes.py`).**
 - Files: `main/zk_handlers.h` (`handle_zk_root`)
 - ~~Impact: XSS vectors if any user input is reflected. Also allows loading of arbitrary external resources.~~
 
@@ -211,8 +211,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Fixes: V9
 
 **Step 3.6: ~~Add Content-Security-Policy headers~~ DONE**
-- ✅ Strict CSP header added to `handle_zk_root`: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'`.
-- No CDN allowlist needed — all crypto uses native Web Crypto API. Only inline script/style and same-origin API calls permitted.
+- ✅ Hash-based CSP header added to `handle_zk_root` using SHA-256 hashes of inline `<script>` and `<style>` content. No `'unsafe-inline'` — only exact-match hashes are permitted.
+- Policy: `default-src 'none'; script-src 'sha256-...'; style-src 'sha256-...'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'`.
+- **Important**: if the inline JS or CSS changes, the hashes must be recomputed and updated in `zk_handlers.h`.
 - Fixes: V12
 
 **Step 3.7: ~~Add SRI to CDN script tags~~ DONE (bundled instead)**
