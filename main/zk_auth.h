@@ -482,8 +482,12 @@ public:
     char *response_str = cJSON_PrintUnformatted(resp_doc);
     cJSON_Delete(resp_doc);
 
-    // Rotate tunnel key so the old private key can't decrypt future sessions
-    regenerate_tunnel_key();
+    // Rotate tunnel key only on success so the old private key can't decrypt
+    // future sessions.  On failure the client still holds the cached device
+    // public key and must be able to retry without re-fetching identity.
+    if (verification_result) {
+      regenerate_tunnel_key();
+    }
 
     *success_out = verification_result;
     return response_str;
