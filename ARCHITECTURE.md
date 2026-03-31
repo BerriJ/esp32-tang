@@ -27,10 +27,11 @@ main/
   tang_storage.h       TangKeyStore — public key cache, NVS persistence, rotation
   tang_handlers.h      HTTP handlers for /adv and /rec (Tang protocol)
   provision.h          eFuse KEY5 provisioning logic
-  provision_handlers.h HTTP handlers for /api/provision/*
   zk_auth.h            ZKAuth — ECIES tunnel, unlock/change-password/rotate, rate limiting
   zk_handlers.h        HTTP handlers for /api/identity, /api/unlock, etc.
   zk_web_page.h        Embedded HTML/JS web interface (Web Crypto API)
+  wifi_prov_handlers.h HTTP handlers for SoftAP WiFi provisioning (/api/configure)
+  wifi_prov_page.h     Embedded HTML/JS provisioning page
   https_server.crt     Self-signed P-256 TLS certificate (SAN: esp-tang-lol)
   https_server.key     TLS private key (embedded in firmware, protected by flash encryption)
   Kconfig.projbuild    Menuconfig: WiFi creds, NUM_EXCHANGE_KEYS
@@ -370,16 +371,14 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 
 **HTTP server (port 80)** — Tang protocol + provisioning (plain HTTP for clevis compatibility):
 
-| Endpoint                | Method | Description                                         |
-| ----------------------- | ------ | --------------------------------------------------- |
-| `/adv`                  | GET    | JWS-signed advertisement of signing + exchange keys |
-| `/rec`                  | POST   | Recovery (ECDH) using the newest exchange key       |
-| `/rec/{kid}`            | POST   | Recovery using a specific key (by JWK Thumbprint)   |
-| `/api/provision/status` | GET    | eFuse KEY5 provisioning status                      |
-| `/api/provision`        | POST   | Trigger eFuse KEY5 provisioning                     |
-| `/reboot`               | GET    | Reboot the device                                   |
+| Endpoint     | Method | Description                                         |
+| ------------ | ------ | --------------------------------------------------- |
+| `/adv`       | GET    | JWS-signed advertisement of signing + exchange keys |
+| `/rec`       | POST   | Recovery (ECDH) using the newest exchange key       |
+| `/rec/{kid}` | POST   | Recovery using a specific key (by JWK Thumbprint)   |
+| `/reboot`    | GET    | Reboot the device                                   |
 
-**SoftAP provisioning server (port 80, only when no WiFi is configured):**
+**SoftAP provisioning server (HTTPS port 443, only when no WiFi is configured):**
 
 | Endpoint         | Method | Description                               |
 | ---------------- | ------ | ----------------------------------------- |
