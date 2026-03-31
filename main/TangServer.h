@@ -4,6 +4,7 @@
 #include "sdkconfig.h"
 #include <esp_event.h>
 #include <esp_http_server.h>
+#include <esp_https_server.h>
 #include <esp_log.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
@@ -29,6 +30,7 @@ const char *wifi_password = CONFIG_WIFI_PASSWORD;
 // --- Global State ---
 bool unlocked = false;
 httpd_handle_t server_http = NULL;
+httpd_handle_t server_https = NULL;
 TangKeyStore keystore;
 ZKAuth zk_auth;
 
@@ -90,19 +92,27 @@ void setup_wifi() {
   }
 }
 
-// --- Setup HTTP Server Routes ---
-httpd_handle_t setup_http_server() {
+// Embedded TLS certificate and private key (via EMBED_TXTFILES)
+extern const uint8_t server_crt_start[] asm("_binary_https_server_crt_start");
+extern const uint8_t server_crt_end[] asm("_binary_https_server_crt_end");
+extern const uint8_t server_key_start[] asm("_binary_https_server_key_start");
+extern const uint8_t server_key_end[] asm("_binary_https_server_key_end");
+
+// --- Setup HTTP Server (port 80) — Tang protocol + provisioning ---
+// Tang protocol (/adv, /rec) is cryptographically authenticated via JWS/ECDH,
+// so TLS is not required. Running plain HTTP ensures compatibility with
+// standard tang clients (clevis) that cannot verify self-signed certificates.
+httpd_handle_t setup_plain_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
   config.stack_size = 8192;
-  config.max_uri_handlers = 16;
+  config.max_uri_handlers = 10;
   config.uri_match_fn = httpd_uri_match_wildcard;
 
   httpd_handle_t server = NULL;
 
   if (httpd_start(&server, &config) == ESP_OK) {
     register_provision_handlers(server);
-    register_zk_handlers(server);
 
     httpd_uri_t adv_uri = {.uri = "/adv",
                            .method = HTTP_GET,
@@ -130,9 +140,38 @@ httpd_handle_t setup_http_server() {
 
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
 
-    ESP_LOGI(TAG, "HTTP server listening on port 80");
+    ESP_LOGI(TAG, "HTTP server listening on port 80 (Tang protocol)");
   } else {
     ESP_LOGE(TAG, "Failed to start HTTP server");
+  }
+
+  return server;
+}
+
+// --- Setup HTTPS Server (port 443) — Web UI + ZK auth API ---
+// HTTPS provides the secure context required by the Web Crypto API.
+httpd_handle_t setup_https_server() {
+  httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
+  config.servercert = server_crt_start;
+  config.servercert_len = server_crt_end - server_crt_start;
+  config.prvtkey_pem = server_key_start;
+  config.prvtkey_len = server_key_end - server_key_start;
+
+  config.httpd.lru_purge_enable = true;
+  config.httpd.stack_size = 10240;
+  config.httpd.max_uri_handlers = 12;
+  config.httpd.uri_match_fn = httpd_uri_match_wildcard;
+
+  httpd_handle_t server = NULL;
+
+  if (httpd_ssl_start(&server, &config) == ESP_OK) {
+    register_zk_handlers(server);
+
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
+
+    ESP_LOGI(TAG, "HTTPS server listening on port 443 (Web UI)");
+  } else {
+    ESP_LOGE(TAG, "Failed to start HTTPS server");
   }
 
   return server;
@@ -199,13 +238,14 @@ void setup() {
     ESP_LOGW(TAG, "ZK Auth initialization failed");
   }
 
-  // 6. WiFi + HTTP server
+  // 6. WiFi — wait for IP before starting servers
   setup_wifi();
-  server_http = setup_http_server();
+  server_http = setup_plain_http_server();
+  server_https = setup_https_server();
 
-  if (server_http) {
+  if (server_http && server_https) {
     ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
-    ESP_LOGI(TAG, "  ZK Auth UI:  http://<ip>/");
+    ESP_LOGI(TAG, "  ZK Auth UI:  https://<ip>/");
     ESP_LOGI(TAG, "  Tang /adv:   http://<ip>/adv");
     ESP_LOGI(TAG, "  Tang /rec:   http://<ip>/rec  (requires activation)");
   }

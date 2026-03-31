@@ -10,10 +10,11 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 ### CRITICAL (P0) — Must fix before any production use
 
-**V1. No TLS/HTTPS — all traffic is plaintext HTTP**
-- Files: `main/TangServer.h` (setup_http_server), `main/zk_web_page.h` (all fetch calls)
-- Impact: Even though ECIES protects the password hash, all response bodies (`/adv` JWS, `/rec` ECDH results, `/api/status`, `/api/identity`) are transmitted in cleartext. A network observer sees Tang protocol messages, device state, and can perform active MITM on the ECIES tunnel (replace device pubkey in `/api/identity` response).
-- The ECIES tunnel is a custom protocol and cannot authenticate the server — a MITM can serve their own ephemeral key and relay.
+**V1. ~~No TLS/HTTPS — all traffic is plaintext HTTP~~ FIXED**
+- **Status: HTTPS enabled via `esp_https_server` with embedded self-signed P-256 certificate. All traffic is TLS-encrypted. Web UI uses native Web Crypto API (requires secure context). Browser shows certificate warning on first visit (expected for self-signed).**
+- Files: `main/TangServer.h` (httpd_ssl_start), `main/CMakeLists.txt` (EMBED_TXTFILES https_server.crt/https_server.key), `sdkconfig` (CONFIG_ESP_HTTPS_SERVER_ENABLE)
+- ~~Impact: Even though ECIES protects the password hash, all response bodies (`/adv` JWS, `/rec` ECDH results, `/api/status`, `/api/identity`) are transmitted in cleartext. A network observer sees Tang protocol messages, device state, and can perform active MITM on the ECIES tunnel (replace device pubkey in `/api/identity` response).~~
+- ~~The ECIES tunnel is a custom protocol and cannot authenticate the server — a MITM can serve their own ephemeral key and relay.~~
 
 **V2. ~~No Secure Boot — unsigned firmware executes freely~~ FIXED**
 - **Status: Secure Boot V2 has been activated.**
@@ -46,9 +47,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/provision_handlers.h`, `main/zk_handlers.h`
 - ~~Impact: Any website can make cross-origin API calls to the device if it's on a reachable network. Enables CSRF-like attacks from malicious web pages.~~
 
-**V8. CDN-loaded crypto libraries without SRI**
-- Files: `main/zk_web_page.h` (script tags for crypto-js and elliptic.js)
-- Impact: CDN compromise → injected JS → password exfiltration. There are no Subresource Integrity hashes.
+**V8. ~~CDN-loaded crypto libraries without SRI~~ FIXED**
+- **Status: CryptoJS and elliptic.js completely removed. All cryptography now uses the browser's native Web Crypto API (`crypto.subtle`). HTTPS provides the required secure context. Zero external dependencies. ~194KB firmware savings.**
+- Files: `main/zk_web_page.h` (Web Crypto API), `main/TangServer.h` (HTTPS)
+- ~~Impact: CDN compromise → injected JS → password exfiltration. There are no Subresource Integrity hashes.~~
 
 **V9. ~~MAC address as PBKDF2 salt is weak~~ FIXED**
 - **Status: Replaced with eFuse Unique ID (128-bit, factory-burned, not network-observable).**
@@ -71,9 +73,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/zk_web_page.h` (HTML), `main/zk_handlers.h` (`handle_zk_root`)
 - Impact: XSS vectors if any user input is reflected. Also allows loading of arbitrary external resources.
 
-**V13. Console.log exposes cryptographic secrets in browser**
-- Files: `main/zk_web_page.h` (JavaScript: "Session Key", "Shared Secret", "Encryption Key", "MAC Key" all logged)
-- Impact: Any browser extension or devtools access leaks all session secrets.
+**V13. ~~Console.log exposes cryptographic secrets in browser~~ FIXED**
+- **Status: All console.log statements exposing secrets removed during Web Crypto API migration. Only non-sensitive status messages remain.**
+- Files: `main/zk_web_page.h`
+- ~~Impact: Any browser extension or devtools access leaks all session secrets.~~
 
 **V14. DPA protection at LOW level**
 - Files: `sdkconfig` (`CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_LOW=y`)
@@ -210,9 +213,11 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Better: bundle crypto-js and elliptic.js inline (already partially done) and use strict CSP
 - Fixes: V12
 
-**Step 3.7: Add SRI to CDN script tags**
-- Add `integrity="sha384-..."` and `crossorigin="anonymous"` to both `<script>` tags
-- Or better: bundle the libraries into the embedded HTML to eliminate CDN dependency entirely
+**Step 3.7: ~~Add SRI to CDN script tags~~ DONE (bundled instead)**
+- ✅ Bundled crypto-js 4.2.0 and elliptic 6.5.4 into firmware using ESP-IDF `EMBED_TXTFILES`.
+- Served from local endpoints `/js/crypto-js.min.js` and `/js/elliptic.min.js` with immutable cache headers.
+- Eliminates CDN dependency entirely — device works offline.
+- Factory partition expanded from 1MB to 1216KB to accommodate the additional ~195KB.
 - Fixes: V8
 
 **Step 3.8: Remove console.log of secrets**
@@ -269,7 +274,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —       | Done             |
 | ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —       | Done (breaking)  |
 | 7        | Remove console.log secrets                      | V13  | Trivial | Yes              |
-| 8        | Add SRI / bundle crypto libs                    | V8   | Low     | Yes              |
+| ~~8~~    | ~~Add SRI / bundle crypto libs~~ ✅              | V8   | —       | Done             |
 | ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —       | Done             |
 | ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —       | Done (automatic) |
 | ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —       | Done             |

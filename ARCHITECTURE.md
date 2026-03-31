@@ -22,15 +22,17 @@ TEE (M-mode) memory and is never exposed to the application (REE / U-mode).
 ```
 main/
   main.cpp             Entry point (setup + loop)
-  TangServer.h         WiFi, HTTP server, boot sequence
+  TangServer.h         WiFi, dual HTTP/HTTPS server, boot sequence
   encoding.h           Base64url encode/decode helpers
   tang_storage.h       TangKeyStore — public key cache, NVS persistence, rotation
   tang_handlers.h      HTTP handlers for /adv and /rec (Tang protocol)
   provision.h          eFuse KEY5 provisioning logic
   provision_handlers.h HTTP handlers for /api/provision/*
-  zk_auth.h            ZKAuth — ECIES tunnel, unlock/change-password/rotate
+  zk_auth.h            ZKAuth — ECIES tunnel, unlock/change-password/rotate, rate limiting
   zk_handlers.h        HTTP handlers for /api/identity, /api/unlock, etc.
-  zk_web_page.h        Embedded HTML/JS web interface
+  zk_web_page.h        Embedded HTML/JS web interface (Web Crypto API)
+  https_server.crt     Self-signed P-256 TLS certificate (SAN: esp-tang-lol)
+  https_server.key     TLS private key (embedded in firmware, protected by flash encryption)
   Kconfig.projbuild    Menuconfig: WiFi creds, NUM_EXCHANGE_KEYS
 
 components/
@@ -278,9 +280,11 @@ this data survives reboots and lock/unlock cycles.
 
 ## ECIES Tunnel (Password Transport)
 
-To protect the PBKDF2 hash in transit (the device does not use TLS), the web
-interface establishes an **ECIES** (Elliptic Curve Integrated Encryption Scheme)
-tunnel to the device:
+Although the web UI is served over HTTPS, the ECIES tunnel provides an
+additional layer of **end-to-end encryption** for the password hash, independent
+of the TLS certificate trust model (which uses a self-signed certificate). The
+web interface establishes an **ECIES** (Elliptic Curve Integrated Encryption
+Scheme) tunnel to the device:
 
 1. **Device** generates an ephemeral P-256 keypair and serves the public key
    at `GET /api/identity`. The keypair is regenerated after every use (not just
@@ -356,23 +360,30 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 
 ---
 
-## Tang Protocol Endpoints
+## Endpoints
+
+**HTTP server (port 80)** — Tang protocol + provisioning (plain HTTP for clevis compatibility):
 
 | Endpoint                | Method | Description                                         |
 | ----------------------- | ------ | --------------------------------------------------- |
 | `/adv`                  | GET    | JWS-signed advertisement of signing + exchange keys |
 | `/rec`                  | POST   | Recovery (ECDH) using the newest exchange key       |
 | `/rec/{kid}`            | POST   | Recovery using a specific key (by JWK Thumbprint)   |
-| `/api/identity`         | GET    | Device tunnel public key + MAC address              |
-| `/api/status`           | GET    | Unlock/configuration status, gen counter, uptime    |
-| `/api/unlock`           | POST   | Submit ECIES-encrypted password hash                |
-| `/api/lock`             | POST   | Wipe TEE secrets, disable `/rec`                    |
-| `/api/change-password`  | POST   | Change password (ECIES blob: old + new hash)        |
-| `/api/rotate`           | POST   | Rotate to next exchange key generation              |
 | `/api/provision/status` | GET    | eFuse KEY5 provisioning status                      |
 | `/api/provision`        | POST   | Trigger eFuse KEY5 provisioning                     |
 | `/reboot`               | GET    | Reboot the device                                   |
-| `/`                     | GET    | Embedded web UI (HTML/JS)                           |
+
+**HTTPS server (port 443)** — Web UI + ZK auth API (TLS required for Web Crypto secure context):
+
+| Endpoint               | Method | Description                                      |
+| ---------------------- | ------ | ------------------------------------------------ |
+| `/`                    | GET    | Embedded web UI (HTML/JS, Web Crypto API)        |
+| `/api/identity`        | GET    | Device tunnel public key + MAC address           |
+| `/api/status`          | GET    | Unlock/configuration status, gen counter, uptime |
+| `/api/unlock`          | POST   | Submit ECIES-encrypted password hash             |
+| `/api/lock`            | POST   | Wipe TEE secrets, disable `/rec`                 |
+| `/api/change-password` | POST   | Change password (ECIES blob: old + new hash)     |
+| `/api/rotate`          | POST   | Rotate to next exchange key generation           |
 
 ---
 
@@ -383,9 +394,9 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 │  Browser (REE - untrusted network)           │
 │  • Plaintext password (never transmitted)    │
 │  • PBKDF2 hash (encrypted in ECIES tunnel)   │
-│  • Ephemeral ECDH keypair                    │
+│  • Ephemeral ECDH keypair (Web Crypto API)   │
 └──────────────┬───────────────────────────────┘
-               │ ECIES-encrypted blob (HTTP)
+               │ ECIES-encrypted blob over HTTPS
 ┌──────────────▼───────────────────────────────┐
 │  ESP32 REE (U-mode, main application)        │
 │  • ECIES decryption (ephemeral tunnel key)   │
@@ -429,3 +440,12 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 - **Ephemeral tunnel keys** are regenerated after every use (not just at
   boot), providing per-operation forward secrecy for the password transport
   channel. Capturing a blob is useless once the tunnel key has rotated.
+- **Rate limiting** protects against brute-force password attempts. Failed
+  attempts trigger exponential backoff (1 s → 2 s → 4 s → … → 5 min cap).
+  Successful authentication resets the counter.
+- **Dual transport**: the Tang protocol (`/adv`, `/rec`) is served over plain
+  HTTP (port 80) for compatibility with clevis and curl. The web UI and ZK
+  auth API are served over HTTPS (port 443) with a self-signed P-256
+  certificate, providing the secure context required by the Web Crypto API.
+  All browser-side cryptography (PBKDF2, ECDH, AES-CBC, HMAC-SHA256) uses
+  the native `crypto.subtle` API — no external JavaScript libraries.

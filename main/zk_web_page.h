@@ -513,12 +513,10 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
         </div>
     </div>
 
-    <!-- ⚠️ SECURITY WARNING: Password handling in browser - client-side only -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/elliptic/6.5.4/elliptic.min.js"></script>
+    <!-- All crypto uses the browser's native Web Crypto API (requires HTTPS) -->
     <script>
 // ===============================================================================
-// Zero-Knowledge Authentication - Browser-Side Cryptography
+// Zero-Knowledge Authentication - Browser-Side Cryptography (Web Crypto API)
 // ===============================================================================
 // SECURITY FEATURES IMPLEMENTED:
 // 1. Password is NEVER transmitted - only PBKDF2-derived hash
@@ -527,48 +525,31 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
 // 4. try-finally blocks ensure cleanup even on errors
 // 5. Ephemeral ECDH keypair (generated per-session, discarded after)
 // 6. All sensitive data cleared before function returns
-// 
+//
 // ENCRYPTION: AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
-// - Format: IV (16 bytes) + Ciphertext (32 bytes) + HMAC (32 bytes) = 80 bytes
+// - Format: IV (16 bytes) + Ciphertext (N bytes) + HMAC (32 bytes)
 // - Provides confidentiality (CBC) + authenticity (HMAC)
 // - Random IV for each session
 // - HMAC prevents tampering and padding oracle attacks
 //
-// PRODUCTION CHECKLIST:
-// - Remove console.log statements that expose secrets (marked with ⚠️)
-// - Ensure input field has autocomplete="off" (already set)
-// - Consider adding Content-Security-Policy headers
-// - Use subresource integrity (SRI) for CDN libraries in production
+// All crypto operations use the native Web Crypto API (crypto.subtle).
+// No external libraries required. HTTPS provides the secure context.
 // ===============================================================================
 
 let deviceIdentity = null;
 
-// ⚠️ SECURITY: Secure memory wiping functions
-function secureWipeArray(arr) {
-    if (!arr) return;
-    for (let i = 0; i < arr.length; i++) {
-        arr[i] = 0;
+function secureWipe(buf) {
+    if (!buf) return;
+    if (buf instanceof Uint8Array || buf instanceof ArrayBuffer) {
+        const view = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+        for (let i = 0; i < view.length; i++) view[i] = 0;
     }
-}
-
-function secureWipeWordArray(wordArray) {
-    if (!wordArray || !wordArray.words) return;
-    for (let i = 0; i < wordArray.words.length; i++) {
-        wordArray.words[i] = 0;
-    }
-    wordArray.sigBytes = 0;
-}
-
-function secureWipeString(str) {
-    // Note: JavaScript strings are immutable, but we can at least dereference
-    // Best practice: clear the input field immediately after reading
-    return null;
 }
 
 function hexToBytes(hex) {
-    const bytes = [];
+    const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < hex.length; i += 2) {
-        bytes.push(parseInt(hex.substr(i, 2), 16));
+        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
     }
     return bytes;
 }
@@ -577,22 +558,13 @@ function bytesToHex(bytes) {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function wordArrayToByteArray(wordArray) {
-    const words = wordArray.words;
-    const sigBytes = wordArray.sigBytes;
-    const bytes = [];
-    for (let i = 0; i < sigBytes; i++) {
-        bytes.push((words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff);
-    }
-    return bytes;
-}
-
-function byteArrayToWordArray(bytes) {
-    const words = [];
-    for (let i = 0; i < bytes.length; i++) {
-        words[i >>> 2] |= bytes[i] << (24 - (i % 4) * 8);
-    }
-    return CryptoJS.lib.WordArray.create(words, bytes.length);
+// Concatenate multiple Uint8Arrays
+function concat(...arrays) {
+    const total = arrays.reduce((sum, a) => sum + a.length, 0);
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const a of arrays) { result.set(a, offset); offset += a.length; }
+    return result;
 }
 
 async function loadDeviceIdentity() {
@@ -600,7 +572,6 @@ async function loadDeviceIdentity() {
         const response = await fetch('/api/identity');
         if (!response.ok) throw new Error('Failed to fetch device identity');
         deviceIdentity = await response.json();
-        
         console.log('Device Public Key loaded');
         return true;
     } catch (error) {
@@ -610,227 +581,143 @@ async function loadDeviceIdentity() {
     }
 }
 
+// Derive AES-256-CBC ciphertext + HMAC-SHA256 blob from plaintext bytes.
+// Returns { clientPubHex, blobHex }.
+async function buildEciesPayload(plaintextBytes) {
+    if (!deviceIdentity) {
+        const loaded = await loadDeviceIdentity();
+        if (!loaded) throw new Error('Failed to load device identity');
+    }
+
+    let sharedSecret = null;
+
+    try {
+        // Generate ephemeral ECDH keypair (P-256)
+        const clientKeyPair = await crypto.subtle.generateKey(
+            { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']
+        );
+        const clientPubRaw = new Uint8Array(
+            await crypto.subtle.exportKey('raw', clientKeyPair.publicKey)
+        );
+        const clientPubHex = bytesToHex(clientPubRaw);
+
+        // Import server's public key and derive shared secret
+        const serverPubKey = await crypto.subtle.importKey(
+            'raw', hexToBytes(deviceIdentity.pubKey),
+            { name: 'ECDH', namedCurve: 'P-256' }, false, []
+        );
+        sharedSecret = new Uint8Array(await crypto.subtle.deriveBits(
+            { name: 'ECDH', public: serverPubKey }, clientKeyPair.privateKey, 256
+        ));
+
+        // Derive separate encryption and MAC keys: SHA-256("label" || sharedSecret)
+        const encLabel = new TextEncoder().encode('encryption');
+        const macLabel = new TextEncoder().encode('authentication');
+        const encKey = new Uint8Array(await crypto.subtle.digest('SHA-256', concat(encLabel, sharedSecret)));
+        const macKey = new Uint8Array(await crypto.subtle.digest('SHA-256', concat(macLabel, sharedSecret)));
+
+        // Clear shared secret after key derivation
+        secureWipe(sharedSecret);
+        sharedSecret = null;
+
+        // AES-256-CBC encrypt (Web Crypto adds PKCS7 padding; we trim it since plaintext is block-aligned)
+        const iv = crypto.getRandomValues(new Uint8Array(16));
+        const aesKey = await crypto.subtle.importKey('raw', encKey, 'AES-CBC', false, ['encrypt']);
+        const encryptedFull = new Uint8Array(await crypto.subtle.encrypt(
+            { name: 'AES-CBC', iv }, aesKey, plaintextBytes
+        ));
+        // Strip PKCS7 padding block (server expects raw CBC output, no padding)
+        const ciphertext = encryptedFull.slice(0, plaintextBytes.length);
+
+        // HMAC-SHA256 over IV + Ciphertext (Encrypt-then-MAC)
+        const dataToAuth = concat(iv, ciphertext);
+        const hmacKey = await crypto.subtle.importKey(
+            'raw', macKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        );
+        const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, dataToAuth));
+
+        // Build blob: IV(16) + Ciphertext(N) + HMAC(32)
+        const blobHex = bytesToHex(concat(iv, ciphertext, hmac));
+
+        // Wipe key material
+        secureWipe(encKey);
+        secureWipe(macKey);
+
+        return { clientPubHex, blobHex };
+    } finally {
+        if (sharedSecret) secureWipe(sharedSecret);
+    }
+}
+
 async function performSecureUnlock() {
     const passwordInput = document.getElementById('password');
     const password = passwordInput.value;
-    
+
     if (!password) {
         showStatus('Please enter a password', 'error');
         return;
     }
-    
+
     const btn = document.getElementById('unlockBtn');
     btn.disabled = true;
     showStatus('Initializing secure connection...', 'info', true);
-    
-    // ⚠️ SECURITY: Track all sensitive variables for cleanup
-    let sessionKeyHash = null;
-    let sessionKeyBytes = null;
-    let sharedSecretBytes = null;
-    let aesKeyHash = null;
-    let aesKeyBytes = null;
-    let clientKey = null;
-    
+
+    let sessionKey = null;
+
     try {
-        // Load device identity if not already loaded
         if (!deviceIdentity) {
             const loaded = await loadDeviceIdentity();
-            if (!loaded) {
-                btn.disabled = false;
-                return;
-            }
+            if (!loaded) { btn.disabled = false; return; }
         }
-        
+
         showStatus('Computing zero-knowledge proof...', 'info', true);
-        
-        // Step 1: Derive session key using PBKDF2
+
         // PBKDF2-HMAC-SHA256 with 600000 iterations (OWASP 2023 minimum for SHA-256)
-        // Use eFuse Unique ID as salt (128-bit, factory-burned, not network-observable)
         const saltBytes = hexToBytes(deviceIdentity.salt);
-        const salt = byteArrayToWordArray(saltBytes);
-        sessionKeyHash = CryptoJS.PBKDF2(password, salt, {
-            keySize: 256/32,  // 256 bits = 8 words
-            iterations: 600000,
-            hasher: CryptoJS.algo.SHA256
-        });
-        
-        // ⚠️ SECURITY: Clear password from input field immediately
+        const passwordKey = await crypto.subtle.importKey(
+            'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+        );
+        // Clear password from input immediately after reading
         passwordInput.value = '';
-        
-        sessionKeyBytes = wordArrayToByteArray(sessionKeyHash);
-        const sessionKeyHex = bytesToHex(sessionKeyBytes);
-        
-        // ⚠️ PRODUCTION WARNING: Remove console.log statements in production builds
-        // These logs expose sensitive cryptographic material
-        console.log('Salt (eFuse UID):', deviceIdentity.salt);
-        console.log('Session Key (PBKDF2):', sessionKeyHex);
-        
+
+        sessionKey = new Uint8Array(await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: saltBytes, iterations: 600000, hash: 'SHA-256' },
+            passwordKey, 256
+        ));
+
         showStatus('Establishing ECIES tunnel...', 'info', true);
-        
-        // Step 2: Generate ephemeral client keypair using elliptic
-        const ec = new elliptic.ec('p256');
-        clientKey = ec.genKeyPair();
-        
-        // Export uncompressed public key (0x04 + X + Y)
-        const clientPubHex = clientKey.getPublic('hex');
-        console.log('Client Public Key:', clientPubHex); // Public key - safe to log
-        
-        // Step 3: Import server public key and derive shared secret (ECDH)
-        const serverKey = ec.keyFromPublic(deviceIdentity.pubKey, 'hex');
-        const sharedPoint = clientKey.derive(serverKey.getPublic());
-        
-        // Convert BN to 32-byte array
-        const sharedSecretHex = sharedPoint.toString(16).padStart(64, '0');
-        sharedSecretBytes = hexToBytes(sharedSecretHex);
-        
-        // ⚠️ PRODUCTION WARNING: Remove in production - exposes shared secret
-        console.log('Shared Secret:', sharedSecretHex);
-        
-        // Step 4: Derive separate keys for encryption and authentication
-        // This prevents key reuse vulnerabilities in Encrypt-then-MAC
-        const sharedSecretWA = byteArrayToWordArray(sharedSecretBytes);
-        
-        // Encryption key: SHA256("encryption" || shared_secret)
-        const encKeyHash = CryptoJS.SHA256(
-            CryptoJS.enc.Utf8.parse('encryption').concat(sharedSecretWA)
-        );
-        const encKeyBytes = wordArrayToByteArray(encKeyHash);
-        
-        // MAC key: SHA256("authentication" || shared_secret)
-        const macKeyHash = CryptoJS.SHA256(
-            CryptoJS.enc.Utf8.parse('authentication').concat(sharedSecretWA)
-        );
-        const macKeyBytes = wordArrayToByteArray(macKeyHash);
-        
-        // ⚠️ PRODUCTION WARNING: Remove in production - exposes keys
-        console.log('Encryption Key:', bytesToHex(encKeyBytes));
-        console.log('MAC Key:', bytesToHex(macKeyBytes));
-        
-        // ⚠️ SECURITY: Clear shared secret after deriving keys
-        secureWipeArray(sharedSecretBytes);
-        secureWipeWordArray(sharedSecretWA);
-        
-        showStatus('Encrypting credentials...', 'info', true);
-        
-        // Step 5: Encrypt the session key hash with AES-256-CBC
-        
-        // Generate random IV (16 bytes for CBC)
-        const ivWords = CryptoJS.lib.WordArray.random(16);
-        
-        // Convert encryption key bytes to WordArray
-        const encKey = byteArrayToWordArray(encKeyBytes);
-        
-        // Encrypt with AES-256-CBC using NoPadding
-        // Session key hash is 32 bytes (exactly 2 blocks), so no padding needed
-        const encrypted = CryptoJS.AES.encrypt(
-            sessionKeyHash,
-            encKey,
-            {
-                iv: ivWords,
-                mode: CryptoJS.mode.CBC,
-                padding: CryptoJS.pad.NoPadding
-            }
-        );
-        
-        // ⚠️ SECURITY: Clear session key after encryption
-        secureWipeArray(sessionKeyBytes);
-        secureWipeWordArray(sessionKeyHash);
-        
-        // Extract IV and ciphertext
-        const ivBytes = wordArrayToByteArray(ivWords);
-        const ciphertextBytes = wordArrayToByteArray(encrypted.ciphertext);
-        
-        showStatus('Computing authentication tag...', 'info', true);
-        
-        // Build complete blob: IV (16) + Ciphertext (32) + HMAC (32) = 80 bytes
-        // Note: We only include first 32 bytes of ciphertext (should be exactly 32 after padding)
-        const completeBlob = new Uint8Array(80);
-        completeBlob.set(ivBytes, 0);           // IV at offset 0
-        completeBlob.set(ciphertextBytes.slice(0, 32), 16);  // First 32 bytes of ciphertext at offset 16
-        
-        // Step 6: Compute HMAC-SHA256 over IV + Ciphertext (Encrypt-then-MAC)
-        // CRITICAL: Compute HMAC over the EXACT data in the blob (first 48 bytes: IV + CT)
-        const dataToAuthenticateBytes = new Uint8Array(48);
-        dataToAuthenticateBytes.set(completeBlob.slice(0, 48));
-        const dataToAuthenticate = byteArrayToWordArray(Array.from(dataToAuthenticateBytes));
-        const macKey = byteArrayToWordArray(macKeyBytes);
-        const hmac = CryptoJS.HmacSHA256(dataToAuthenticate, macKey);
-        const hmacBytes = wordArrayToByteArray(hmac);
-        
-        console.log('IV:', bytesToHex(ivBytes));
-        console.log('HMAC:', bytesToHex(hmacBytes));
-        
-        // Place HMAC in blob
-        completeBlob.set(hmacBytes, 48);        // HMAC at offset 48
-        
-        const encryptedBlobHex = bytesToHex(Array.from(completeBlob));
-        
-        console.log('Encrypted Blob (IV+CT+HMAC):', encryptedBlobHex); // Encrypted data - safe to log
-        
-        // ⚠️ SECURITY: Clear all keys after encryption
-        secureWipeArray(encKeyBytes);
-        secureWipeArray(macKeyBytes);
-        secureWipeWordArray(encKeyHash);
-        secureWipeWordArray(macKeyHash);
-        secureWipeWordArray(encKey);
-        secureWipeWordArray(macKey);
-        secureWipeWordArray(ivWords);
-        secureWipeWordArray(dataToAuthenticate);
-        secureWipeWordArray(hmac);
-        
+
+        const { clientPubHex, blobHex } = await buildEciesPayload(sessionKey);
+
+        // Wipe session key after encryption
+        secureWipe(sessionKey);
+        sessionKey = null;
+
         showStatus('Sending unlock request...', 'info', true);
-        
-        // Step 7: Send to device
+
         const response = await fetch('/api/unlock', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                clientPub: clientPubHex,
-                blob: encryptedBlobHex
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clientPub: clientPubHex, blob: blobHex })
         });
-        
-        if (!response.ok) {
-            throw new Error('Unlock request failed');
-        }
-        
+
+        if (!response.ok) throw new Error('Unlock request failed');
+
         const result = await response.json();
-        
+
         if (result.success) {
-            showStatus('✅ Device unlocked successfully!', 'success');
-            
-            // Reload page after 1.5s - server will show status page
-            setTimeout(() => {
-                window.location.reload();
-            }, 1500);
+            showStatus('\u2705 Device unlocked successfully!', 'success');
+            setTimeout(() => window.location.reload(), 1500);
         } else {
-            showStatus('❌ Unlock failed: ' + (result.error || 'Unknown error'), 'error');
+            showStatus('\u274c Unlock failed: ' + (result.error || 'Unknown error'), 'error');
         }
-        
     } catch (error) {
         console.error('Error:', error);
-        showStatus('❌ Error: ' + error.message, 'error');
+        showStatus('\u274c Error: ' + error.message, 'error');
     } finally {
-        // ⚠️ SECURITY: Always clear sensitive data, even on error
         btn.disabled = false;
-        passwordInput.value = ''; // Ensure password field is cleared
-        
-        // Wipe all sensitive variables
-        if (sessionKeyHash) secureWipeWordArray(sessionKeyHash);
-        if (sessionKeyBytes) secureWipeArray(sessionKeyBytes);
-        if (sharedSecretBytes) secureWipeArray(sharedSecretBytes);
-        
-        // Clear client private key if possible
-        if (clientKey && clientKey.priv) {
-            // Elliptic.js uses BN.js for private keys - zero it out
-            if (clientKey.priv.words) {
-                for (let i = 0; i < clientKey.priv.words.length; i++) {
-                    clientKey.priv.words[i] = 0;
-                }
-            }
-        }
+        passwordInput.value = '';
+        if (sessionKey) secureWipe(sessionKey);
     }
 }
 
@@ -838,16 +725,11 @@ function showStatus(message, type, showLoader = false) {
     const status = document.getElementById('status');
     status.className = 'status-' + type;
     status.style.display = 'block';
-    
     if (showLoader) {
         status.innerHTML = '<div class="loader"></div>' + message;
     } else {
         status.innerHTML = message;
     }
-}
-
-function bytesToHex(bytes) {
-    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 async function lockDevice() {
@@ -860,98 +742,11 @@ function formatUptime(milliseconds) {
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
-    
-    if (days > 0) {
-        return `${days}d ${hours % 24}h ${minutes % 60}m`;
-    } else if (hours > 0) {
-        return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-    } else if (minutes > 0) {
-        return `${minutes}m ${seconds % 60}s`;
-    } else {
-        return `${seconds}s`;
-    }
-}
 
-// Build an ECIES-encrypted payload for the device's ephemeral tunnel key.
-// plaintextWordArray must be a CryptoJS WordArray whose length is a multiple of 16 bytes.
-// Returns { clientPubHex, blobHex }.
-async function buildEciesPayload(plaintextWordArray) {
-    if (!deviceIdentity) {
-        const loaded = await loadDeviceIdentity();
-        if (!loaded) throw new Error('Failed to load device identity');
-    }
-
-    let sharedSecretBytes = null;
-    let clientKey = null;
-
-    try {
-        const ec = new elliptic.ec('p256');
-        clientKey = ec.genKeyPair();
-        const clientPubHex = clientKey.getPublic('hex');
-
-        const serverKey = ec.keyFromPublic(deviceIdentity.pubKey, 'hex');
-        const sharedPoint = clientKey.derive(serverKey.getPublic());
-        const sharedSecretHex = sharedPoint.toString(16).padStart(64, '0');
-        sharedSecretBytes = hexToBytes(sharedSecretHex);
-
-        const sharedSecretWA = byteArrayToWordArray(sharedSecretBytes);
-
-        const encKeyHash = CryptoJS.SHA256(
-            CryptoJS.enc.Utf8.parse('encryption').concat(sharedSecretWA)
-        );
-        const encKeyBytes = wordArrayToByteArray(encKeyHash);
-
-        const macKeyHash = CryptoJS.SHA256(
-            CryptoJS.enc.Utf8.parse('authentication').concat(sharedSecretWA)
-        );
-        const macKeyBytes = wordArrayToByteArray(macKeyHash);
-
-        secureWipeArray(sharedSecretBytes);
-        secureWipeWordArray(sharedSecretWA);
-
-        const ivWords = CryptoJS.lib.WordArray.random(16);
-        const encKey = byteArrayToWordArray(encKeyBytes);
-
-        const encrypted = CryptoJS.AES.encrypt(
-            plaintextWordArray,
-            encKey,
-            { iv: ivWords, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.NoPadding }
-        );
-
-        const ivBytes = wordArrayToByteArray(ivWords);
-        const ciphertextBytes = wordArrayToByteArray(encrypted.ciphertext);
-
-        const blobLen = 16 + ciphertextBytes.length + 32;
-        const completeBlob = new Uint8Array(blobLen);
-        completeBlob.set(ivBytes, 0);
-        completeBlob.set(ciphertextBytes, 16);
-
-        const dataToAuth = byteArrayToWordArray(Array.from(completeBlob.slice(0, 16 + ciphertextBytes.length)));
-        const macKey = byteArrayToWordArray(macKeyBytes);
-        const hmac = CryptoJS.HmacSHA256(dataToAuth, macKey);
-        const hmacBytes = wordArrayToByteArray(hmac);
-
-        completeBlob.set(hmacBytes, 16 + ciphertextBytes.length);
-
-        secureWipeArray(encKeyBytes);
-        secureWipeArray(macKeyBytes);
-        secureWipeWordArray(encKeyHash);
-        secureWipeWordArray(macKeyHash);
-        secureWipeWordArray(encKey);
-        secureWipeWordArray(macKey);
-        secureWipeWordArray(ivWords);
-        secureWipeWordArray(dataToAuth);
-        secureWipeWordArray(hmac);
-
-        return { clientPubHex, blobHex: bytesToHex(Array.from(completeBlob)) };
-    } finally {
-        if (sharedSecretBytes) secureWipeArray(sharedSecretBytes);
-        if (clientKey && clientKey.priv && clientKey.priv.words) {
-            for (let i = 0; i < clientKey.priv.words.length; i++) {
-                clientKey.priv.words[i] = 0;
-            }
-        }
-    }
+    if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
 }
 
 function showChangeStatus(message, type, showLoader = false) {
@@ -1027,12 +822,15 @@ async function performRotate() {
         showRotateStatus('Deriving key...', 'info', true);
 
         const saltBytes = hexToBytes(deviceIdentity.salt);
-        const salt = byteArrayToWordArray(saltBytes);
-
-        keyHash = CryptoJS.PBKDF2(pw, salt, {
-            keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
-        });
+        const passwordKey = await crypto.subtle.importKey(
+            'raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']
+        );
         pwInput.value = '';
+
+        keyHash = new Uint8Array(await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: saltBytes, iterations: 600000, hash: 'SHA-256' },
+            passwordKey, 256
+        ));
 
         showRotateStatus('Encrypting...', 'info', true);
         const { clientPubHex, blobHex } = await buildEciesPayload(keyHash);
@@ -1058,7 +856,7 @@ async function performRotate() {
     } finally {
         btn.disabled = false;
         pwInput.value = '';
-        if (keyHash) secureWipeWordArray(keyHash);
+        if (keyHash) secureWipe(keyHash);
     }
 }
 
@@ -1089,25 +887,34 @@ async function performPasswordChange() {
         showChangeStatus('Deriving keys...', 'info', true);
 
         const saltBytes = hexToBytes(deviceIdentity.salt);
-        const salt = byteArrayToWordArray(saltBytes);
 
-        oldKeyHash = CryptoJS.PBKDF2(currentPw, salt, {
-            keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
-        });
+        const oldPwKey = await crypto.subtle.importKey(
+            'raw', new TextEncoder().encode(currentPw), 'PBKDF2', false, ['deriveBits']
+        );
         currentPwInput.value = '';
 
-        newKeyHash = CryptoJS.PBKDF2(newPw, salt, {
-            keySize: 256/32, iterations: 600000, hasher: CryptoJS.algo.SHA256
-        });
+        oldKeyHash = new Uint8Array(await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: saltBytes, iterations: 600000, hash: 'SHA-256' },
+            oldPwKey, 256
+        ));
+
+        const newPwKey = await crypto.subtle.importKey(
+            'raw', new TextEncoder().encode(newPw), 'PBKDF2', false, ['deriveBits']
+        );
         newPwInput.value = '';
 
+        newKeyHash = new Uint8Array(await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: saltBytes, iterations: 600000, hash: 'SHA-256' },
+            newPwKey, 256
+        ));
+
         // Concatenate: old_hash(32) + new_hash(32) = 64 bytes
-        const combined = oldKeyHash.clone().concat(newKeyHash);
+        const combined = concat(oldKeyHash, newKeyHash);
 
         showChangeStatus('Encrypting...', 'info', true);
         const { clientPubHex, blobHex } = await buildEciesPayload(combined);
 
-        secureWipeWordArray(combined);
+        secureWipe(combined);
 
         showChangeStatus('Sending request...', 'info', true);
         const response = await fetch('/api/change-password', {
@@ -1131,8 +938,8 @@ async function performPasswordChange() {
         btn.disabled = false;
         currentPwInput.value = '';
         newPwInput.value = '';
-        if (oldKeyHash) secureWipeWordArray(oldKeyHash);
-        if (newKeyHash) secureWipeWordArray(newKeyHash);
+        if (oldKeyHash) secureWipe(oldKeyHash);
+        if (newKeyHash) secureWipe(newKeyHash);
     }
 }
 
@@ -1165,45 +972,30 @@ window.addEventListener('load', async () => {
 
 // Allow Enter key to submit
 document.getElementById('password').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        performSecureUnlock();
-    }
+    if (e.key === 'Enter') performSecureUnlock();
 });
 
 document.getElementById('currentPassword').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        document.getElementById('newPassword').focus();
-    }
+    if (e.key === 'Enter') document.getElementById('newPassword').focus();
 });
 
 document.getElementById('newPassword').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        performPasswordChange();
-    }
+    if (e.key === 'Enter') performPasswordChange();
 });
 
 document.getElementById('rotatePassword').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        performRotate();
-    }
+    if (e.key === 'Enter') performRotate();
 });
 
-// ⚠️ SECURITY: Clear password field on page unload/navigation
 window.addEventListener('beforeunload', () => {
     const passwordInput = document.getElementById('password');
-    if (passwordInput) {
-        passwordInput.value = '';
-    }
+    if (passwordInput) passwordInput.value = '';
 });
 
-// ⚠️ SECURITY: Clear password field when page is restored from bfcache
 window.addEventListener('pageshow', (event) => {
     if (event.persisted) {
-        // Page was restored from back/forward cache
         const passwordInput = document.getElementById('password');
-        if (passwordInput) {
-            passwordInput.value = '';
-        }
+        if (passwordInput) passwordInput.value = '';
     }
 });
     </script>

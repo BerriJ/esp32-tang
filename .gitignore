@@ -65,3 +65,5 @@ components/json_generator
 *secure_boot_signing_key.pem
 tee_sec_stg_hmac.bin
 tee_pbkdf2_hmac.bin
+https_server.crt
+https_server.key
