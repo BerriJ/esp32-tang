@@ -52,11 +52,9 @@ public:
     return (int)(generation % NUM_EXCHANGE_KEYS);
   }
 
-  // NVS key name for a slot
-  static const char *exc_pub_nvs_key(int s) {
-    static char buf[16];
-    snprintf(buf, sizeof(buf), "exc_pub_%d", s);
-    return buf;
+  // NVS key name for a slot (caller must provide buffer of at least 16 bytes)
+  static void exc_pub_nvs_key(int s, char *buf, size_t buf_size) {
+    snprintf(buf, buf_size, "exc_pub_%d", s);
   }
 
   // Check if public keys exist in NVS (i.e. device was activated before)
@@ -176,9 +174,11 @@ public:
       return false;
 
     bool ok = true;
+    char key_buf[16];
 
     for (int s = 0; s < NUM_EXCHANGE_KEYS && ok; s++) {
-      ok = ok && (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
+      exc_pub_nvs_key(s, key_buf, sizeof(key_buf));
+      ok = ok && (nvs_set_blob(handle, key_buf, exc_pub[s],
                                TEE_EC_PUBLIC_KEY_SIZE) == ESP_OK);
     }
 
@@ -206,10 +206,11 @@ public:
     if (err != ESP_OK)
       return false;
 
+    char key_buf[16];
     for (int s = 0; s < NUM_EXCHANGE_KEYS; s++) {
       size_t len = TEE_EC_PUBLIC_KEY_SIZE;
-      if (nvs_get_blob(handle, exc_pub_nvs_key(s), exc_pub[s], &len) !=
-              ESP_OK ||
+      exc_pub_nvs_key(s, key_buf, sizeof(key_buf));
+      if (nvs_get_blob(handle, key_buf, exc_pub[s], &len) != ESP_OK ||
           len != TEE_EC_PUBLIC_KEY_SIZE) {
         nvs_close(handle);
         return false;
@@ -261,7 +262,9 @@ public:
     if (err != ESP_OK)
       return false;
 
-    bool ok = (nvs_set_blob(handle, exc_pub_nvs_key(s), exc_pub[s],
+    char key_buf[16];
+    exc_pub_nvs_key(s, key_buf, sizeof(key_buf));
+    bool ok = (nvs_set_blob(handle, key_buf, exc_pub[s],
                             TEE_EC_PUBLIC_KEY_SIZE) == ESP_OK) &&
               (nvs_set_u32(handle, "gen", (uint32_t)new_gen) == ESP_OK) &&
               (nvs_commit(handle) == ESP_OK);

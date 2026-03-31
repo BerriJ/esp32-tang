@@ -105,9 +105,11 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `sdkconfig` (`CONFIG_COMPILER_OPTIMIZATION_DEBUG=y`)
 - Impact: Larger, slower binaries. No security hardening flags (ASLR equivalent, stack canaries are enabled though).
 
-**V20. `exc_pub_nvs_key()` uses static buffer — not thread-safe**
+**V20. ~~`exc_pub_nvs_key()` uses static buffer — not thread-safe~~ FIXED**
+
+- **Status: Fixed to use caller-provided buffer instead of static buffer.**
 - Files: `main/tang_storage.h` (`exc_pub_nvs_key`)
-- Impact: Unlikely issue given single-threaded HTTP server, but poor practice.
+- ~~Impact: Unlikely issue given single-threaded HTTP server, but poor practice.~~
 
 **V21. WiFi credentials in sdkconfig**
 - Files: `sdkconfig` (`CONFIG_WIFI_SSID`, `CONFIG_WIFI_PASSWORD`)
@@ -232,9 +234,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Modify: `main/TangServer.h`
 - Fixes: V17
 
-**Step 3.10: Fix thread-safety of `exc_pub_nvs_key()`**
-- Change static buffer to caller-provided buffer
-- Modify: `main/tang_storage.h`
+**Step 3.10: ~~Fix thread-safety of `exc_pub_nvs_key()`~~ DONE**
+
+- ✅ Changed function signature to accept caller-provided buffer: `exc_pub_nvs_key(int s, char *buf, size_t buf_size)`
+- ✅ Updated all call sites in `save_exchange_pubs()`, `load_exchange_pubs()`, and `rotate_exchange_key()` to provide local stack buffers
 - Fixes: V20
 
 **Verification:**
@@ -285,7 +288,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —       | Done             |
 | 15       | WiFi backoff                                    | V17  | Low     | Yes              |
 | 16       | Release build optimization                      | V19  | Trivial | Yes              |
-| 17       | Thread-safe NVS key                             | V20  | Trivial | Yes              |
+| ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —       | Done             |
 | 18       | Secure OTA                                      | V15  | High    | Yes              |
 | 19       | WiFi provisioning                               | V21  | Medium  | Yes              |
 | 20       | Unique mDNS hostname                            | V22  | Trivial | Yes              |
