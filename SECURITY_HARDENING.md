@@ -79,9 +79,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/zk_web_page.h`
 - ~~Impact: Any browser extension or devtools access leaks all session secrets.~~
 
-**V14. DPA protection at LOW level**
-- Files: `sdkconfig` (`CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_LOW=y`)
-- Impact: Side-channel attacks on the hardware crypto accelerator. For a key server, MEDIUM or HIGH is warranted.
+**V14. ~~DPA protection at LOW level~~ FIXED**
+- **Status: DPA protection increased to MEDIUM. `CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_MEDIUM=y` set in sdkconfig.defaults.**
+- Files: `sdkconfig`, `sdkconfig.defaults`
+- ~~Impact: Side-channel attacks on the hardware crypto accelerator. For a key server, MEDIUM or HIGH is warranted.~~
 
 **V15. No secure OTA update mechanism**
 - Impact: No way to patch vulnerabilities in deployed devices.
@@ -139,8 +140,8 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - ✅ TEE Secure Storage has been activated.
 - Fixes: V10
 
-**Step 1.5: Increase DPA Protection Level**
-- Change `CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_LOW=n` → `CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_MEDIUM=y`
+**Step 1.5: ~~Increase DPA Protection Level~~ DONE**
+- ✅ Changed `CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_MEDIUM=y` in sdkconfig and sdkconfig.defaults.
 - Fixes: V14
 
 **Step 1.6: Set Release Build Optimization**
@@ -281,7 +282,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —       | Done             |
 | ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —       | Done (breaking)  |
 | ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —       | Done             |
-| 14       | Increase DPA protection                         | V14  | Trivial | Yes              |
+| ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —       | Done             |
 | 15       | WiFi backoff                                    | V17  | Low     | Yes              |
 | 16       | Release build optimization                      | V19  | Trivial | Yes              |
 | 17       | Thread-safe NVS key                             | V20  | Trivial | Yes              |
