@@ -18,7 +18,6 @@ static const char *TAG = "TangServer";
 // Core components
 #include "encoding.h"
 #include "provision.h"
-#include "provision_handlers.h"
 #include "tang_handlers.h"
 #include "tang_storage.h"
 #include "wifi_prov_handlers.h"
@@ -179,7 +178,6 @@ httpd_handle_t setup_provisioning_server() {
   httpd_handle_t server = NULL;
   if (httpd_ssl_start(&server, &config) == ESP_OK) {
     register_wifi_prov_handlers(server);
-    ESP_LOGI(TAG, "Provisioning server listening on port 443 (HTTPS)");
   } else {
     ESP_LOGE(TAG, "Failed to start provisioning server");
   }
@@ -194,14 +192,12 @@ httpd_handle_t setup_plain_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
   config.stack_size = 8192;
-  config.max_uri_handlers = 10;
+  config.max_uri_handlers = 8;
   config.uri_match_fn = httpd_uri_match_wildcard;
 
   httpd_handle_t server = NULL;
 
   if (httpd_start(&server, &config) == ESP_OK) {
-    register_provision_handlers(server);
-
     httpd_uri_t adv_uri = {.uri = "/adv",
                            .method = HTTP_GET,
                            .handler = handle_adv,
