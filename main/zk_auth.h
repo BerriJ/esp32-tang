@@ -10,6 +10,8 @@
 #include <esp_mac.h>
 #include <esp_random.h>
 #include <esp_system.h>
+#include <esp_timer.h>
+#include <inttypes.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecdh.h>
@@ -18,8 +20,6 @@
 #include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
-#include <esp_timer.h>
-#include <inttypes.h>
 #include <string.h>
 
 // Zero-Knowledge Authentication Module
@@ -62,7 +62,8 @@ private:
     return secs > MAX_BACKOFF_SECS ? MAX_BACKOFF_SECS : secs;
   }
 
-  // Check if rate-limited. If so, sets *error_json with retry_after and returns true.
+  // Check if rate-limited. If so, sets *error_json with retry_after and returns
+  // true.
   bool check_rate_limit(char **error_json) {
     int64_t now = esp_timer_get_time();
     if (now < lockout_until_us) {
@@ -73,7 +74,8 @@ private:
                "{\"error\":\"Too many attempts\",\"retry_after\":%" PRIu32 "}",
                remaining);
       *error_json = strdup(buf);
-      ESP_LOGW(TAG_ZK_AUTH, "Rate limited: %" PRIu32 " seconds remaining", remaining);
+      ESP_LOGW(TAG_ZK_AUTH, "Rate limited: %" PRIu32 " seconds remaining",
+               remaining);
       return true;
     }
     return false;
@@ -85,7 +87,8 @@ private:
     uint32_t delay = backoff_secs(failed_attempts);
     lockout_until_us = esp_timer_get_time() + (int64_t)delay * 1000000;
     ESP_LOGW(TAG_ZK_AUTH,
-             "Auth failure #%" PRIu32 " \u2014 next attempt allowed in %" PRIu32 " s",
+             "Auth failure #%" PRIu32 " \u2014 next attempt allowed in %" PRIu32
+             " s",
              failed_attempts, delay);
   }
 

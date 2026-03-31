@@ -13,11 +13,10 @@ extern ZKAuth zk_auth;
 extern TangKeyStore keystore;
 extern httpd_handle_t server_http;
 
-// Send a JSON response with CORS headers
+// Send a JSON response
 static void send_json_response(httpd_req_t *req, const char *json,
                                bool success) {
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   // Use 429 for rate-limited responses (detected by retry_after in JSON)
   if (!success && strstr(json, "retry_after"))
     httpd_resp_set_status(req, "429 Too Many Requests");
@@ -70,7 +69,6 @@ static esp_err_t handle_zk_identity(httpd_req_t *req) {
   }
 
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, json_response);
   free(json_response);
   return ESP_OK;
@@ -93,7 +91,6 @@ static esp_err_t handle_zk_status(httpd_req_t *req) {
            (unsigned)retry_after);
 
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, response);
   return ESP_OK;
 }
@@ -101,7 +98,6 @@ static esp_err_t handle_zk_status(httpd_req_t *req) {
 static esp_err_t handle_zk_lock(httpd_req_t *req) {
   zk_auth.lock();
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, "{\"unlocked\":false}");
   return ESP_OK;
 }
@@ -142,12 +138,6 @@ void register_zk_handlers(httpd_handle_t server) {
                             .user_ctx = NULL};
   httpd_register_uri_handler(server, &unlock_uri);
 
-  httpd_uri_t unlock_options_uri = {.uri = "/api/unlock",
-                                    .method = HTTP_OPTIONS,
-                                    .handler = handle_cors_options,
-                                    .user_ctx = NULL};
-  httpd_register_uri_handler(server, &unlock_options_uri);
-
   httpd_uri_t lock_uri = {.uri = "/api/lock",
                           .method = HTTP_POST,
                           .handler = handle_zk_lock,
@@ -160,23 +150,11 @@ void register_zk_handlers(httpd_handle_t server) {
                                      .user_ctx = NULL};
   httpd_register_uri_handler(server, &change_password_uri);
 
-  httpd_uri_t change_password_options_uri = {.uri = "/api/change-password",
-                                             .method = HTTP_OPTIONS,
-                                             .handler = handle_cors_options,
-                                             .user_ctx = NULL};
-  httpd_register_uri_handler(server, &change_password_options_uri);
-
   httpd_uri_t rotate_uri = {.uri = "/api/rotate",
                             .method = HTTP_POST,
                             .handler = handle_zk_rotate,
                             .user_ctx = NULL};
   httpd_register_uri_handler(server, &rotate_uri);
-
-  httpd_uri_t rotate_options_uri = {.uri = "/api/rotate",
-                                    .method = HTTP_OPTIONS,
-                                    .handler = handle_cors_options,
-                                    .user_ctx = NULL};
-  httpd_register_uri_handler(server, &rotate_options_uri);
 
   ESP_LOGI(TAG_ZK, "ZK Auth routes registered:");
   ESP_LOGI(TAG_ZK, "  GET  /             - Web interface");

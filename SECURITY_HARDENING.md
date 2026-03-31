@@ -41,9 +41,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/zk_web_page.h` (JavaScript PBKDF2 call)
 - ~~Impact: Modern GPUs can test billions of SHA-256 hashes/second. 10k iterations offers minimal protection.~~
 
-**V7. CORS wildcard (`Access-Control-Allow-Origin: *`)**
-- Files: `main/provision_handlers.h`, `main/zk_handlers.h` (all response headers)
-- Impact: Any website can make cross-origin API calls to the device if it's on a reachable network. Enables CSRF-like attacks from malicious web pages.
+**V7. ~~CORS wildcard (`Access-Control-Allow-Origin: *`)~~ FIXED**
+- **Status: All CORS headers and OPTIONS preflight handlers removed. Web UI is same-origin; no cross-origin access is permitted.**
+- Files: `main/provision_handlers.h`, `main/zk_handlers.h`
+- ~~Impact: Any website can make cross-origin API calls to the device if it's on a reachable network. Enables CSRF-like attacks from malicious web pages.~~
 
 **V8. CDN-loaded crypto libraries without SRI**
 - Files: `main/zk_web_page.h` (script tags for crypto-js and elliptic.js)
@@ -194,10 +195,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Lock/reboot are DoS-only — keys remain safe in TEE NVS.
 - ~~Fixes: V4, V16~~
 
-**Step 3.4: Restrict CORS**
-- Replace `Access-Control-Allow-Origin: *` with the device's own origin or remove CORS entirely (web UI is same-origin)
-- If cross-origin access is needed, use a specific allowlist
-- Modify: all handlers in `provision_handlers.h` and `zk_handlers.h`
+**Step 3.4: ~~Restrict CORS~~ DONE**
+- ✅ Removed all `Access-Control-Allow-Origin: *` headers and OPTIONS preflight handlers.
+- Web UI is same-origin (served from `/`); cross-origin requests are now blocked by browsers.
 - Fixes: V7
 
 **Step 3.5: ~~Use stronger PBKDF2 salt~~ DONE**
@@ -260,28 +260,28 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 ## Prioritized Action List
 
-| Priority | Action                                   | Vuln | Effort  | Reversible?      |
-| -------- | ---------------------------------------- | ---- | ------- | ---------------- |
-| ~~1~~    | ~~Enable Secure Boot V2~~ ✅              | V2   | —       | Done             |
-| ~~2~~    | ~~Enable Flash Encryption~~ ✅            | V3   | —       | Done             |
-| 3        | Enable HTTPS                             | V1   | Medium  | Yes              |
+| Priority | Action                                          | Vuln | Effort  | Reversible?      |
+| -------- | ----------------------------------------------- | ---- | ------- | ---------------- |
+| ~~1~~    | ~~Enable Secure Boot V2~~ ✅                     | V2   | —       | Done             |
+| ~~2~~    | ~~Enable Flash Encryption~~ ✅                   | V3   | —       | Done             |
+| 3        | Enable HTTPS                                    | V1   | Medium  | Yes              |
 | ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —       | N/A (accepted)   |
-| ~~5~~    | ~~Add rate limiting~~ ✅                  | V5   | —       | Done             |
-| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅ | V6   | —       | Done (breaking)  |
-| 7        | Remove console.log secrets               | V13  | Trivial | Yes              |
-| 8        | Add SRI / bundle crypto libs             | V8   | Low     | Yes              |
-| 9        | Restrict CORS                            | V7   | Trivial | Yes              |
-| ~~10~~   | ~~Disable JTAG~~ ✅                       | V11  | —       | Done (automatic) |
-| ~~11~~   | ~~TEE Secure Storage~~ ✅                 | V10  | —       | Done             |
-| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅               | V9   | —       | Done (breaking)  |
-| 13       | Add CSP headers                          | V12  | Trivial | Yes              |
-| 14       | Increase DPA protection                  | V14  | Trivial | Yes              |
-| 15       | WiFi backoff                             | V17  | Low     | Yes              |
-| 16       | Release build optimization               | V19  | Trivial | Yes              |
-| 17       | Thread-safe NVS key                      | V20  | Trivial | Yes              |
-| 18       | Secure OTA                               | V15  | High    | Yes              |
-| 19       | WiFi provisioning                        | V21  | Medium  | Yes              |
-| 20       | Unique mDNS hostname                     | V22  | Trivial | Yes              |
+| ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —       | Done             |
+| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —       | Done (breaking)  |
+| 7        | Remove console.log secrets                      | V13  | Trivial | Yes              |
+| 8        | Add SRI / bundle crypto libs                    | V8   | Low     | Yes              |
+| ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —       | Done             |
+| ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —       | Done (automatic) |
+| ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —       | Done             |
+| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —       | Done (breaking)  |
+| 13       | Add CSP headers                                 | V12  | Trivial | Yes              |
+| 14       | Increase DPA protection                         | V14  | Trivial | Yes              |
+| 15       | WiFi backoff                                    | V17  | Low     | Yes              |
+| 16       | Release build optimization                      | V19  | Trivial | Yes              |
+| 17       | Thread-safe NVS key                             | V20  | Trivial | Yes              |
+| 18       | Secure OTA                                      | V15  | High    | Yes              |
+| 19       | WiFi provisioning                               | V21  | Medium  | Yes              |
+| 20       | Unique mDNS hostname                            | V22  | Trivial | Yes              |
 
 ---
 
