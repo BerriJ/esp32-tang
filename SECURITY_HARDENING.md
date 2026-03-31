@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, CSRF protection for /reboot).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining item is a medium-priority operational consideration (CSRF protection for /reboot). OTA has been declined — physical access is always available, and serial flashing via Secure Boot is sufficient.
 
 ---
 
@@ -84,8 +84,9 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `sdkconfig`, `sdkconfig.defaults`
 - ~~Impact: Side-channel attacks on the hardware crypto accelerator. For a key server, MEDIUM or HIGH is warranted.~~
 
-**V15. No secure OTA update mechanism**
-- Impact: No way to patch vulnerabilities in deployed devices.
+**V15. ~~No secure OTA update mechanism~~ WON'T FIX**
+- **Status: Declined. Physical access is always available, so serial flashing via Secure Boot V2 is sufficient. OTA would halve available app partition space (A/B slots) and add attack surface for no practical benefit.**
+- ~~Impact: No way to patch vulnerabilities in deployed devices.~~
 
 **V16. `/reboot` is an unauthenticated GET (CSRF via img/link)**
 - Files: `main/tang_handlers.h` (`handle_reboot`)
@@ -260,10 +261,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 ### Phase 4: Operational Security (Nice-to-have)
 *Lower priority, can be done incrementally*
 
-**Step 4.1: Implement secure OTA**
-- Add ESP-IDF OTA component with signature verification
-- Pair with Secure Boot to ensure only signed updates are accepted
-- Fixes: V15
+**Step 4.1: ~~Implement secure OTA~~ WON'T FIX**
+- Physical access is always available; serial flashing with Secure Boot V2 is sufficient.
+- OTA would require splitting the factory partition into two OTA slots (halving app space) and adding an authenticated upload endpoint.
+- ~~Fixes: V15~~
 
 **Step 4.2: ~~Externalize WiFi credentials~~ DONE**
 - ✅ SoftAP provisioning implemented. Device starts as `ESP-Tang-Setup` AP when no WiFi is configured.
@@ -282,28 +283,28 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 
 ## Prioritized Action List
 
-| Priority | Action                                          | Vuln | Effort | Reversible?      |
-| -------- | ----------------------------------------------- | ---- | ------ | ---------------- |
-| ~~1~~    | ~~Enable Secure Boot V2~~ ✅                     | V2   | —      | Done             |
-| ~~2~~    | ~~Enable Flash Encryption~~ ✅                   | V3   | —      | Done             |
-| ~~3~~    | ~~Enable HTTPS~~ ✅                              | V1   | —      | Done             |
-| ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —      | N/A (accepted)   |
-| ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —      | Done             |
-| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —      | Done (breaking)  |
-| ~~7~~    | ~~Remove console.log secrets~~ ✅                | V13  | —      | Done             |
-| ~~8~~    | ~~Add SRI / bundle crypto libs~~ ✅              | V8   | —      | Done             |
-| ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —      | Done             |
-| ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —      | Done (automatic) |
-| ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —      | Done             |
-| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —      | Done (breaking)  |
-| ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —      | Done             |
-| ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —      | Done             |
-| ~~15~~   | ~~WiFi backoff~~ ✅                              | V17  | —      | Done             |
-| ~~16~~   | ~~Release build optimization~~ ✅                | V19  | —      | Done             |
-| ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —      | Done             |
-| 18       | Secure OTA                                      | V15  | High   | Yes              |
-| ~~19~~   | ~~WiFi provisioning~~ ✅                         | V21  | —      | Done             |
-| ~~20~~   | ~~Unique mDNS hostname~~ ✅                      | V22  | —      | Done             |
+| Priority | Action                                          | Vuln | Effort | Reversible?           |
+| -------- | ----------------------------------------------- | ---- | ------ | --------------------- |
+| ~~1~~    | ~~Enable Secure Boot V2~~ ✅                     | V2   | —      | Done                  |
+| ~~2~~    | ~~Enable Flash Encryption~~ ✅                   | V3   | —      | Done                  |
+| ~~3~~    | ~~Enable HTTPS~~ ✅                              | V1   | —      | Done                  |
+| ~~4~~    | ~~Authenticate destructive endpoints~~ Accepted | V4   | —      | N/A (accepted)        |
+| ~~5~~    | ~~Add rate limiting~~ ✅                         | V5   | —      | Done                  |
+| ~~6~~    | ~~Increase PBKDF2 to 600k iterations~~ ✅        | V6   | —      | Done (breaking)       |
+| ~~7~~    | ~~Remove console.log secrets~~ ✅                | V13  | —      | Done                  |
+| ~~8~~    | ~~Add SRI / bundle crypto libs~~ ✅              | V8   | —      | Done                  |
+| ~~9~~    | ~~Restrict CORS~~ ✅                             | V7   | —      | Done                  |
+| ~~10~~   | ~~Disable JTAG~~ ✅                              | V11  | —      | Done (automatic)      |
+| ~~11~~   | ~~TEE Secure Storage~~ ✅                        | V10  | —      | Done                  |
+| ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —      | Done (breaking)       |
+| ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —      | Done                  |
+| ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —      | Done                  |
+| ~~15~~   | ~~WiFi backoff~~ ✅                              | V17  | —      | Done                  |
+| ~~16~~   | ~~Release build optimization~~ ✅                | V19  | —      | Done                  |
+| ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —      | Done                  |
+| ~~18~~   | ~~Secure OTA~~ Won't Fix                        | V15  | —      | N/A (physical access) |
+| ~~19~~   | ~~WiFi provisioning~~ ✅                         | V21  | —      | Done                  |
+| ~~20~~   | ~~Unique mDNS hostname~~ ✅                      | V22  | —      | Done                  |
 
 ---
 
@@ -327,7 +328,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - **ESP32-C5 vs C6**: Staying on C6 is recommended. The C5 has comparable security features and switching would add migration effort with minimal security gain.
 - **ECIES tunnel vs TLS**: With HTTPS enabled (Phase 2), the ECIES tunnel becomes defense-in-depth rather than the sole transport protection. Both can coexist; the ECIES tunnel still adds value (end-to-end encryption past any TLS-terminating proxy).
 - **PBKDF2 iteration increase is breaking**: Existing passwords will produce different hashes. A migration path (try 600k first, fall back to 10k, then force re-enrollment) could ease transition.
-- **SRI vs bundling**: Bundling crypto-js + elliptic.js inline eliminates the CDN dependency entirely — preferred for an embedded device that may not always have internet access.
+- **OTA vs serial flashing**: OTA declined — physical access is always available, Secure Boot V2 ensures only signed firmware can be flashed via serial, and OTA would halve app partition space while adding attack surface.
 
 ## Further Considerations
 
