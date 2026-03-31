@@ -243,10 +243,8 @@ httpd_handle_t setup_https_server() {
 
   config.httpd.lru_purge_enable = true;
   config.httpd.stack_size = 10240;
-  config.httpd.max_uri_handlers = 12;
+  config.httpd.max_uri_handlers = 8;
   config.httpd.uri_match_fn = httpd_uri_match_wildcard;
-  // Drop incomplete TLS handshakes faster (default 10s blocks the server)
-  config.tls_handshake_timeout_ms = 3000;
 
   httpd_handle_t server = NULL;
 
