@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, and **HTTPS has been enabled**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, WiFi backoff, release build optimization).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, and **release build optimization has been configured**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, WiFi backoff, WiFi provisioning, unique mDNS hostname).
 
 ---
 
@@ -101,9 +101,11 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - **Status: Flash Encryption encrypts all NVS partitions on flash. TEE NVS partition (`secure_storage`) is additionally encrypted by eFuse KEY3.**
 - ~~Impact: KDF salt and exchange private keys readable from flash dump.~~
 
-**V19. Debug build configuration**
-- Files: `sdkconfig` (`CONFIG_COMPILER_OPTIMIZATION_DEBUG=y`)
-- Impact: Larger, slower binaries. No security hardening flags (ASLR equivalent, stack canaries are enabled though).
+**V19. ~~Debug build configuration~~ FIXED**
+
+- **Status: Changed to release build optimization. `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` and `CONFIG_OPTIMIZATION_LEVEL_RELEASE=y` set in sdkconfig and sdkconfig.defaults.**
+- Files: `sdkconfig`, `sdkconfig.defaults`
+- ~~Impact: Larger, slower binaries. No security hardening flags (ASLR equivalent, stack canaries are enabled though).~~
 
 **V20. ~~`exc_pub_nvs_key()` uses static buffer — not thread-safe~~ FIXED**
 
@@ -146,8 +148,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - ✅ Changed `CONFIG_ESP_CRYPTO_DPA_PROTECTION_LEVEL_MEDIUM=y` in sdkconfig and sdkconfig.defaults.
 - Fixes: V14
 
-**Step 1.6: Set Release Build Optimization**
-- Change `CONFIG_COMPILER_OPTIMIZATION_DEBUG=n` → `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`
+**Step 1.6: ~~Set Release Build Optimization~~ DONE**
+- ✅ Changed from `CONFIG_COMPILER_OPTIMIZATION_DEBUG=y` to `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`
+- ✅ Changed from `CONFIG_OPTIMIZATION_LEVEL_DEBUG=y` to `CONFIG_OPTIMIZATION_LEVEL_RELEASE=y`
+- ✅ Added to `sdkconfig.defaults` for persistent configuration
 - Fixes: V19
 
 **Verification:**
@@ -287,7 +291,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —       | Done             |
 | ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —       | Done             |
 | 15       | WiFi backoff                                    | V17  | Low     | Yes              |
-| 16       | Release build optimization                      | V19  | Trivial | Yes              |
+| ~~16~~   | ~~Release build optimization~~ ✅                | V19  | —       | Done             |
 | ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —       | Done             |
 | 18       | Secure OTA                                      | V15  | High    | Yes              |
 | 19       | WiFi provisioning                               | V21  | Medium  | Yes              |
