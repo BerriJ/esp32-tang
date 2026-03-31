@@ -7,8 +7,6 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 
-static const char *TAG_ZK = "zk_handlers";
-
 extern ZKAuth zk_auth;
 extern TangKeyStore keystore;
 extern httpd_handle_t server_http;
@@ -165,15 +163,6 @@ void register_zk_handlers(httpd_handle_t server) {
                             .handler = handle_zk_rotate,
                             .user_ctx = NULL};
   httpd_register_uri_handler(server, &rotate_uri);
-
-  ESP_LOGI(TAG_ZK, "ZK Auth routes registered:");
-  ESP_LOGI(TAG_ZK, "  GET  /             - Web interface");
-  ESP_LOGI(TAG_ZK, "  GET  /api/identity - Device identity");
-  ESP_LOGI(TAG_ZK, "  GET  /api/status   - Session status");
-  ESP_LOGI(TAG_ZK, "  POST /api/unlock   - Unlock request");
-  ESP_LOGI(TAG_ZK, "  POST /api/lock     - Lock device");
-  ESP_LOGI(TAG_ZK, "  POST /api/change-password - Change password");
-  ESP_LOGI(TAG_ZK, "  POST /api/rotate   - Rotate exchange key");
 }
 
 #endif // ZK_HANDLERS_H

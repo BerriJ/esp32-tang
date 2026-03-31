@@ -10,7 +10,7 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32 Zero-Knowledge Auth</title>
+    <title>ESP Tang Server</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23333' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M13 2H6.5A2.5 2.5 0 0 0 4 4.5v15'/><path d='M17 2v6'/><path d='M17 4h2'/><path d='M20 15.2V21a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20'/><circle cx='17' cy='10' r='2'/></svg>">
     <style>
         * {
@@ -421,8 +421,8 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
 <body>
     <div class="container" id="mainContainer">
         <div id="unlockPage" class="unlock-page">
-            <h1><svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-lg"><path d="M13 2H6.5A2.5 2.5 0 0 0 4 4.5v15"/><path d="M17 2v6"/><path d="M17 4h2"/><path d="M20 15.2V21a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><circle cx="17" cy="10" r="2"/></svg>Zero-Knowledge Auth</h1>
-            <p class="subtitle" id="unlockSubtitle">ESP32-C6 Secure Unlock</p>
+            <h1><svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-lg"><path d="M13 2H6.5A2.5 2.5 0 0 0 4 4.5v15"/><path d="M17 2v6"/><path d="M17 4h2"/><path d="M20 15.2V21a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><circle cx="17" cy="10" r="2"/></svg>ESP32 Tang Server</h1>
+            <p class="subtitle" id="unlockSubtitle">Device Unlock</p>
             
             <div class="setup-box" id="setupNotice">
                 <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> First-Time Setup:</strong> This device has not been initialized yet.
@@ -460,23 +460,11 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             </div>
             
             <div class="status-card">
-                <h3>Session Information</h3>
                 <div class="status-item">
                     <span class="status-label">Status</span>
                     <span class="badge badge-success">Active</span>
                 </div>
-                <div class="status-item">
-                <span class="status-label">Authentication Method</span>
-                <span class="status-value">Password</span>
-                </div>
-                <div class="status-item">
-                <span class="status-label">Key Derivation</span>
-                <span class="status-value">PBKDF2-SHA256</span>
-                </div>
-                <div class="status-item">
-                <span class="status-label">Encryption</span>
-                <span class="status-value">P-256 + TEE + eFuse HMAC</span>
-                </div>
+
                 <div class="status-item">
                     <span class="status-label">Authenticated At</span>
                     <span class="status-value" id="authTime">--</span>

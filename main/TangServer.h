@@ -249,6 +249,8 @@ httpd_handle_t setup_https_server() {
   config.httpd.stack_size = 10240;
   config.httpd.max_uri_handlers = 12;
   config.httpd.uri_match_fn = httpd_uri_match_wildcard;
+  // Drop incomplete TLS handshakes faster (default 10s blocks the server)
+  config.tls_handshake_timeout_ms = 3000;
 
   httpd_handle_t server = NULL;
 
@@ -350,15 +352,27 @@ void setup() {
   if (strlen(wifi_ssid) > 0) {
     // Normal mode — connect to WiFi and start servers
     setup_wifi_sta(wifi_ssid, wifi_password, device_hostname);
+
+    // Wait for WiFi to connect before starting servers — avoids TLS
+    // handshake failures from clients connecting before the network is ready.
+    ESP_LOGI(TAG, "Waiting for WiFi connection...");
+    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
+                        portMAX_DELAY);
+
     server_http = setup_plain_http_server();
     server_https = setup_https_server();
 
     if (server_http && server_https) {
+      esp_netif_ip_info_t ip_info;
+      esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"),
+                            &ip_info);
       ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
       ESP_LOGI(TAG, "  Hostname:    %s", device_hostname);
-      ESP_LOGI(TAG, "  ZK Auth UI:  https://<ip>/");
-      ESP_LOGI(TAG, "  Tang /adv:   http://<ip>/adv");
-      ESP_LOGI(TAG, "  Tang /rec:   http://<ip>/rec  (requires activation)");
+      ESP_LOGI(TAG, "  ZK Auth UI:  https://" IPSTR "/", IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG, "  Tang /adv:   http://" IPSTR "/adv", IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG,
+               "  Tang /rec:   http://" IPSTR "/rec  (requires activation)",
+               IP2STR(&ip_info.ip));
     }
   } else {
     // Provisioning mode — no WiFi configured, start SoftAP
