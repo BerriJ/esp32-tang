@@ -61,6 +61,12 @@ On each power-on the device executes these steps (in `setup()`):
    (P-256) for the ECIES channel. The keypair is regenerated after every use
    (unlock, password change, key rotation) and is never persisted.
 6. **Start WiFi + HTTP server** — register all route handlers.
+   - If WiFi credentials exist (NVS or Kconfig fallback): connect as STA,
+     start HTTP (port 80, Tang protocol) + HTTPS (port 443, web UI).
+   - If no WiFi configured: enter **SoftAP provisioning mode** — start an
+     open AP (`ESP-Tang-Setup`), serve a provisioning page at
+     `http://192.168.4.1` where the user provides SSID, password, and
+     hostname. After saving to NVS, the device reboots into STA mode.
 
 After boot the server serves `/adv` immediately (the signing key is always
 available in TEE Secure Storage). `/rec` requests are refused until the device
@@ -88,7 +94,7 @@ The system uses two independent key hierarchies:
 
 User Password (plaintext, browser-only)
   │
-  ├─ PBKDF2-HMAC-SHA256(password, MAC-address, 10 000 iterations)
+  ├─ PBKDF2-HMAC-SHA256(password, eFuse-UID, 600 000 iterations)
   │    → password_hash (32 bytes, sent to device via ECIES tunnel)
   │
   └─ [Inside TEE] HMAC-SHA256(eFuse KEY5, password_hash || kdf_salt || tee_salt)
@@ -117,12 +123,12 @@ Two salts contribute to master key derivation:
 The user's plaintext password never leaves the browser. The embedded web UI
 performs **PBKDF2-HMAC-SHA256** with:
 
-| Parameter  | Value                                              |
-| ---------- | -------------------------------------------------- |
-| Password   | User-supplied string                               |
-| Salt       | Device MAC address (6 bytes, from `/api/identity`) |
-| Iterations | 10 000                                             |
-| Key length | 256 bits (32 bytes)                                |
+| Parameter  | Value                                                       |
+| ---------- | ----------------------------------------------------------- |
+| Password   | User-supplied string                                        |
+| Salt       | eFuse Unique ID (128 bits / 16 bytes, from `/api/identity`) |
+| Iterations | 600 000 (OWASP 2023 minimum for SHA-256)                    |
+| Key length | 256 bits (32 bytes)                                         |
 
 The resulting 32-byte `password_hash` is the only secret that crosses the
 network boundary; it is protected in transit by the ECIES tunnel (see below).
@@ -373,17 +379,24 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 | `/api/provision`        | POST   | Trigger eFuse KEY5 provisioning                     |
 | `/reboot`               | GET    | Reboot the device                                   |
 
+**SoftAP provisioning server (port 80, only when no WiFi is configured):**
+
+| Endpoint         | Method | Description                               |
+| ---------------- | ------ | ----------------------------------------- |
+| `/`              | GET    | WiFi provisioning page (HTML form)        |
+| `/api/configure` | POST   | Save WiFi SSID, password, hostname to NVS |
+
 **HTTPS server (port 443)** — Web UI + ZK auth API (TLS required for Web Crypto secure context):
 
-| Endpoint               | Method | Description                                      |
-| ---------------------- | ------ | ------------------------------------------------ |
-| `/`                    | GET    | Embedded web UI (HTML/JS, Web Crypto API)        |
-| `/api/identity`        | GET    | Device tunnel public key + MAC address           |
-| `/api/status`          | GET    | Unlock/configuration status, gen counter, uptime |
-| `/api/unlock`          | POST   | Submit ECIES-encrypted password hash             |
-| `/api/lock`            | POST   | Wipe TEE secrets, disable `/rec`                 |
-| `/api/change-password` | POST   | Change password (ECIES blob: old + new hash)     |
-| `/api/rotate`          | POST   | Rotate to next exchange key generation           |
+| Endpoint               | Method | Description                                        |
+| ---------------------- | ------ | -------------------------------------------------- |
+| `/`                    | GET    | Embedded web UI (HTML/JS, Web Crypto API)          |
+| `/api/identity`        | GET    | Device tunnel public key + eFuse UID (PBKDF2 salt) |
+| `/api/status`          | GET    | Unlock/configuration status, gen counter, uptime   |
+| `/api/unlock`          | POST   | Submit ECIES-encrypted password hash               |
+| `/api/lock`            | POST   | Wipe TEE secrets, disable `/rec`                   |
+| `/api/change-password` | POST   | Change password (ECIES blob: old + new hash)       |
+| `/api/rotate`          | POST   | Rotate to next exchange key generation             |
 
 ---
 

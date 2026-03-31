@@ -37,10 +37,10 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 | Partition table | 0x10000  | ~3 KB           | Partition table          |
 | tee_0           | 0x20000  | 192 KB          | TEE application          |
 | secure_storage  | 0x50000  | 64 KB           | TEE NVS (secure storage) |
-| factory         | 0x60000  | 1 MB            | Main application         |
-| nvs             | 0x160000 | 24 KB           | Application NVS          |
-| phy_init        | 0x166000 | 4 KB            | PHY calibration data     |
-| nvs_keys        | 0x167000 | 4 KB            | NVS encryption keys      |
+| factory         | 0x60000  | 1216 KB         | Main application         |
+| nvs             | 0x190000 | 24 KB           | Application NVS          |
+| phy_init        | 0x196000 | 4 KB            | PHY calibration data     |
+| nvs_keys        | 0x197000 | 4 KB            | NVS encryption keys      |
 
 ## Production Provisioning Steps
 

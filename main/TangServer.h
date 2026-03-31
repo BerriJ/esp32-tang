@@ -156,23 +156,7 @@ void setup_wifi_ap() {
   ESP_ERROR_CHECK(esp_wifi_start());
 
   ESP_LOGI(TAG, "Provisioning SoftAP started: SSID='ESP-Tang-Setup'");
-  ESP_LOGI(TAG, "Connect and visit http://192.168.4.1");
-}
-
-// --- Provisioning HTTP Server ---
-httpd_handle_t setup_provisioning_server() {
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.stack_size = 8192;
-  config.max_uri_handlers = 4;
-
-  httpd_handle_t server = NULL;
-  if (httpd_start(&server, &config) == ESP_OK) {
-    register_wifi_prov_handlers(server);
-    ESP_LOGI(TAG, "Provisioning server listening on port 80");
-  } else {
-    ESP_LOGE(TAG, "Failed to start provisioning server");
-  }
-  return server;
+  ESP_LOGI(TAG, "Connect and visit https://192.168.4.1");
 }
 
 // Embedded TLS certificate and private key (via EMBED_TXTFILES)
@@ -180,6 +164,27 @@ extern const uint8_t server_crt_start[] asm("_binary_https_server_crt_start");
 extern const uint8_t server_crt_end[] asm("_binary_https_server_crt_end");
 extern const uint8_t server_key_start[] asm("_binary_https_server_key_start");
 extern const uint8_t server_key_end[] asm("_binary_https_server_key_end");
+
+// --- Provisioning HTTPS Server ---
+httpd_handle_t setup_provisioning_server() {
+  httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
+  config.servercert = server_crt_start;
+  config.servercert_len = server_crt_end - server_crt_start;
+  config.prvtkey_pem = server_key_start;
+  config.prvtkey_len = server_key_end - server_key_start;
+
+  config.httpd.stack_size = 10240;
+  config.httpd.max_uri_handlers = 4;
+
+  httpd_handle_t server = NULL;
+  if (httpd_ssl_start(&server, &config) == ESP_OK) {
+    register_wifi_prov_handlers(server);
+    ESP_LOGI(TAG, "Provisioning server listening on port 443 (HTTPS)");
+  } else {
+    ESP_LOGE(TAG, "Failed to start provisioning server");
+  }
+  return server;
+}
 
 // --- Setup HTTP Server (port 80) — Tang protocol + provisioning ---
 // Tang protocol (/adv, /rec) is cryptographically authenticated via JWS/ECDH,
@@ -363,7 +368,7 @@ void setup() {
 
     ESP_LOGI(TAG, "=== WiFi Provisioning Mode ===");
     ESP_LOGI(TAG, "  Connect to WiFi: ESP-Tang-Setup");
-    ESP_LOGI(TAG, "  Then visit:      http://192.168.4.1");
+    ESP_LOGI(TAG, "  Then visit:      https://192.168.4.1");
   }
 }
 
