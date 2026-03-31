@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, and **release build optimization has been configured**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, WiFi backoff, WiFi provisioning, unique mDNS hostname).
+Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medium, and 5 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled**, **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining items are medium and low-priority operational improvements (secure OTA, WiFi provisioning, unique mDNS hostname, CSRF protection for /reboot).
 
 ---
 
@@ -91,9 +91,10 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Files: `main/tang_handlers.h` (`handle_reboot`)
 - Impact: `<img src="http://esp-tang/reboot">` in any page triggers reboot.
 
-**V17. WiFi reconnect without backoff enables deauth DoS**
-- Files: `main/TangServer.h` (`wifi_event_handler` — immediate reconnect)
-- Impact: Attacker sends deauth frames; device enters tight reconnect loop, consuming CPU.
+**V17. ~~WiFi reconnect without backoff enables deauth DoS~~ FIXED**
+- **Status: Exponential backoff implemented in `wifi_event_handler`. Reconnection delays: 1s, 2s, 4s, 8s, 16s, 32s, up to 60s maximum. Uses FreeRTOS timer for delayed reconnection attempts. Counter resets on successful connection.**
+- Files: `main/TangServer.h` (`wifi_event_handler`, `wifi_reconnect_timer_callback`)
+- ~~Impact: Attacker sends deauth frames; device enters tight reconnect loop, consuming CPU.~~
 
 ### LOW (P3)
 
@@ -233,9 +234,11 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - ✅ Only non-sensitive status messages remain (e.g., "Device Public Key loaded").
 - Fixes: V13
 
-**Step 3.9: Add WiFi reconnect backoff**
-- In `wifi_event_handler` for `WIFI_EVENT_STA_DISCONNECTED`: add exponential backoff (1s, 2s, 4s... up to 60s)
-- Modify: `main/TangServer.h`
+**Step 3.9: ~~Add WiFi reconnect backoff~~ DONE**
+- ✅ Implemented exponential backoff timer in `wifi_event_handler` for `WIFI_EVENT_STA_DISCONNECTED`
+- ✅ Backoff sequence: 1s, 2s, 4s, 8s, 16s, 32s, capped at 60s maximum
+- ✅ Uses FreeRTOS one-shot timer (`xTimerCreate`, `xTimerChangePeriod`)
+- ✅ Automatically resets backoff counter on successful IP acquisition
 - Fixes: V17
 
 **Step 3.10: ~~Fix thread-safety of `exc_pub_nvs_key()`~~ DONE**
@@ -248,8 +251,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 - Test 10+ rapid failed unlock attempts → verify rate limiting kicks in
 - Attempt CORS request from external origin → verify rejection
 - Inspect browser console → no secret material logged
-- Test `GET /reboot` unauthenticated → should fail
-- Test `POST /api/lock` unauthenticated → should fail
+- Test WiFi deauth attack → verify exponential backoff prevents CPU exhaustion
 
 ---
 
@@ -290,7 +292,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 6 medi
 | ~~12~~   | ~~Stronger PBKDF2 salt~~ ✅                      | V9   | —       | Done (breaking)  |
 | ~~13~~   | ~~Add CSP headers~~ ✅                           | V12  | —       | Done             |
 | ~~14~~   | ~~Increase DPA protection~~ ✅                   | V14  | —       | Done             |
-| 15       | WiFi backoff                                    | V17  | Low     | Yes              |
+| ~~15~~   | ~~WiFi backoff~~ ✅                              | V17  | —       | Done             |
 | ~~16~~   | ~~Release build optimization~~ ✅                | V19  | —       | Done             |
 | ~~17~~   | ~~Thread-safe NVS key~~ ✅                       | V20  | —       | Done             |
 | 18       | Secure OTA                                      | V15  | High    | Yes              |

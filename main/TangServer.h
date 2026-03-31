@@ -10,6 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/task.h>
+#include <freertos/timers.h>
 #include <nvs_flash.h>
 
 static const char *TAG = "TangServer";
@@ -38,6 +39,18 @@ ZKAuth zk_auth;
 static EventGroupHandle_t wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
 
+// WiFi reconnection backoff state
+static TimerHandle_t wifi_reconnect_timer = NULL;
+static uint32_t wifi_reconnect_attempts = 0;
+static const uint32_t WIFI_BACKOFF_MAX_DELAY_SEC = 60;
+
+// --- WiFi Reconnect Timer Callback ---
+static void wifi_reconnect_timer_callback(TimerHandle_t xTimer) {
+  ESP_LOGI(TAG, "Attempting WiFi reconnection (attempt %lu)...",
+           wifi_reconnect_attempts + 1);
+  esp_wifi_connect();
+}
+
 // --- WiFi Event Handler ---
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
@@ -46,11 +59,44 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "WiFi connecting...");
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
-    esp_wifi_connect();
-    ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
+    // Calculate exponential backoff delay: 1s, 2s, 4s, 8s, 16s, 32s, 60s,
+    // 60s...
+    uint32_t backoff_delay_sec = 1 << wifi_reconnect_attempts; // 2^attempts
+    if (backoff_delay_sec > WIFI_BACKOFF_MAX_DELAY_SEC) {
+      backoff_delay_sec = WIFI_BACKOFF_MAX_DELAY_SEC;
+    }
+
+    wifi_reconnect_attempts++;
+
+    ESP_LOGI(TAG,
+             "WiFi disconnected, reconnecting in %lu seconds (attempt %lu)...",
+             backoff_delay_sec, wifi_reconnect_attempts);
+
+    // Create timer on first disconnect, or reset existing timer
+    if (wifi_reconnect_timer == NULL) {
+      wifi_reconnect_timer = xTimerCreate(
+          "wifi_reconnect", pdMS_TO_TICKS(backoff_delay_sec * 1000),
+          pdFALSE, // One-shot timer
+          NULL, wifi_reconnect_timer_callback);
+      xTimerStart(wifi_reconnect_timer, 0);
+    } else {
+      // Update timer period and restart
+      xTimerChangePeriod(wifi_reconnect_timer,
+                         pdMS_TO_TICKS(backoff_delay_sec * 1000), 0);
+      xTimerStart(wifi_reconnect_timer, 0);
+    }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
+
+    // Reset backoff counter on successful connection
+    wifi_reconnect_attempts = 0;
+
+    // Stop reconnection timer if it's running
+    if (wifi_reconnect_timer != NULL) {
+      xTimerStop(wifi_reconnect_timer, 0);
+    }
+
     xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
   }
 }
