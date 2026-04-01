@@ -88,13 +88,16 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
                 <input type="text" id="hostname" maxlength="63" value="esp-tang"
                        pattern="[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?"
                        title="Letters, numbers and hyphens only">
-                <div class="hint">Used for network discovery (e.g. https://esp-tang.local)</div>
+                <div class="hint">Used for network discovery (e.g. https://<span id="hostname-preview">esp-tang</span>.local)</div>
             </div>
             <button type="submit" id="btn">Save &amp; Connect</button>
         </form>
         <div id="status" class="status"></div>
     </div>
     <script>
+    document.getElementById('hostname').addEventListener('input', function() {
+        document.getElementById('hostname-preview').textContent = this.value.trim() || 'esp-tang';
+    });
     document.getElementById('f').addEventListener('submit', async function(e) {
         e.preventDefault();
         var btn = document.getElementById('btn');

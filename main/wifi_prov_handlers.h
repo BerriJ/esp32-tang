@@ -79,7 +79,7 @@ static esp_err_t handle_prov_root(httpd_req_t *req) {
   httpd_resp_set_hdr(
       req, "Content-Security-Policy",
       "default-src 'none'; "
-      "script-src 'sha256-vYaSfpaKr5QWVc5HgWafqhev+ds32US2HcRFdVHbER4='; "
+      "script-src 'sha256-jbLLDtHw46yGbi4u8zQRiT3R2wuaMBZ+OIyJfdOtXRA='; "
       "style-src 'sha256-EjixCmbU5VI4SexUFBLu5k4IDdN+JRiJ/L70jSmJPfw='; "
       "img-src data:; "
       "connect-src 'self'; "
