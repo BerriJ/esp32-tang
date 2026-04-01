@@ -222,6 +222,32 @@ httpd_handle_t setup_provisioning_server() {
 
 // --- Setup HTTP Server (port 80) — Tang protocol + provisioning ---
 // Tang protocol (/adv, /rec) is cryptographically authenticated via JWS/ECDH,
+// Redirect GET / on port 80 to the HTTPS web UI.
+static esp_err_t handle_http_root_redirect(httpd_req_t *req) {
+  // Use the Host header so the redirect works with both IP and mDNS names.
+  size_t host_len = httpd_req_get_hdr_value_len(req, "Host");
+  char host[128];
+  if (host_len > 0 && host_len < sizeof(host)) {
+    httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host));
+  } else {
+    snprintf(host, sizeof(host), "%s.local", device_hostname);
+  }
+
+  // Strip port suffix if present (e.g. "host:80")
+  char *colon = strchr(host, ':');
+  if (colon) {
+    *colon = '\0';
+  }
+
+  char location[256];
+  snprintf(location, sizeof(location), "https://%s/", host);
+
+  httpd_resp_set_status(req, "301 Moved Permanently");
+  httpd_resp_set_hdr(req, "Location", location);
+  httpd_resp_sendstr(req, "Redirecting to HTTPS");
+  return ESP_OK;
+}
+
 // so TLS is not required. Running plain HTTP ensures compatibility with
 // standard tang clients (clevis) that cannot verify self-signed certificates.
 httpd_handle_t setup_plain_http_server() {
@@ -258,9 +284,16 @@ httpd_handle_t setup_plain_http_server() {
                               .user_ctx = NULL};
     httpd_register_uri_handler(server, &reboot_uri);
 
+    httpd_uri_t root_redirect_uri = {.uri = "/",
+                                     .method = HTTP_GET,
+                                     .handler = handle_http_root_redirect,
+                                     .user_ctx = NULL};
+    httpd_register_uri_handler(server, &root_redirect_uri);
+
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
 
     ESP_LOGI(TAG, "HTTP server listening on port 80 (Tang protocol)");
+    ESP_LOGI(TAG, "GET / on port 80 redirects to HTTPS");
   } else {
     ESP_LOGE(TAG, "Failed to start HTTP server");
   }

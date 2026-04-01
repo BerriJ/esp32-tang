@@ -88,7 +88,7 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
                 <input type="text" id="hostname" maxlength="63" value="esp-tang"
                        pattern="[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?"
                        title="Letters, numbers and hyphens only">
-                <div class="hint">Used for network discovery (e.g. http://esp-tang.local)</div>
+                <div class="hint">Used for network discovery (e.g. https://esp-tang.local)</div>
             </div>
             <button type="submit" id="btn">Save &amp; Connect</button>
         </form>
