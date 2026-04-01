@@ -43,11 +43,11 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 ### 1. Generate HTTPS server certificate
 
 ```bash
-openssl ecparam -genkey -name prime256v1 -noout -out https_server.key
+openssl ecparam -genkey -name prime256v1 -noout -out ./main/https_server.key
 
-openssl req -new -x509 -key https_server.key -out https_server.crt \
-  -days 3650 -subj "/CN=esp-tang-lol" \
-  -addext "subjectAltName=DNS:esp-tang-lol"
+openssl req -new -x509 -key ./main/https_server.key -out ./main/https_server.crt \
+  -days 3650 -subj "/CN=esp-tang" \
+  -addext "subjectAltName=DNS:esp-tang,DNS:esp-tang.local"
 ```
 
 Place both files in the project root (next to `CMakeLists.txt`). They are embedded into the firmware via `EMBED_TXTFILES` in `main/CMakeLists.txt` and protected at rest by flash encryption.
