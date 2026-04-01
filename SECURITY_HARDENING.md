@@ -135,7 +135,7 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medi
 - ~~Impact: Credentials visible in source control and flash dumps.~~
 
 **V22. ~~No mDNS/hostname collision protection~~ FIXED**
-- **Status: Hostname is user-configurable during SoftAP provisioning. Default hostname changed from `esp-tang-lol` to `esp-tang`. Stored in NVS, validated to RFC 1123 (alphanumeric + hyphens, max 63 chars).**
+- **Status: Hostname is user-configurable during SoftAP provisioning. Default hostname changed from `esp-tang` to `esp-tang`. Stored in NVS, validated to RFC 1123 (alphanumeric + hyphens, max 63 chars).**
 - Files: `main/TangServer.h`, `main/wifi_prov_handlers.h`
 - ~~Impact: Hostname spoofing on local network.~~
 

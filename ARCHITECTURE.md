@@ -32,7 +32,7 @@ main/
   zk_web_page.h        Embedded HTML/JS web interface (Web Crypto API)
   wifi_prov_handlers.h HTTP handlers for SoftAP WiFi provisioning (/api/configure)
   wifi_prov_page.h     Embedded HTML/JS provisioning page
-  https_server.crt     Self-signed P-256 TLS certificate (SAN: esp-tang-lol)
+  https_server.crt     Self-signed P-256 TLS certificate (SAN: esp-tang)
   https_server.key     TLS private key (embedded in firmware, protected by flash encryption)
   Kconfig.projbuild    Menuconfig: WiFi creds, NUM_EXCHANGE_KEYS
 
