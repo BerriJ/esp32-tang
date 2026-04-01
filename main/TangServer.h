@@ -2,6 +2,7 @@
 #define TANG_SERVER_H
 
 #include "sdkconfig.h"
+#include <driver/gpio.h>
 #include <esp_event.h>
 #include <esp_http_server.h>
 #include <esp_https_server.h>
@@ -37,6 +38,39 @@ ZKAuth zk_auth;
 static EventGroupHandle_t wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
 
+// --- LED State ---
+#define LED_GPIO GPIO_NUM_15
+static bool wifi_connected = false;
+
+static void led_task(void *arg) {
+  gpio_config_t io_conf = {
+      .pin_bit_mask = (1ULL << LED_GPIO),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&io_conf);
+
+  while (true) {
+    if (wifi_connected && unlocked) {
+      // Activated & connected: LED off
+      gpio_set_level(LED_GPIO, 1);
+      vTaskDelay(pdMS_TO_TICKS(200));
+    } else if (wifi_connected) {
+      // Connected but not activated: LED on
+      gpio_set_level(LED_GPIO, 0);
+      vTaskDelay(pdMS_TO_TICKS(200));
+    } else {
+      // Not connected: blink
+      gpio_set_level(LED_GPIO, 1);
+      vTaskDelay(pdMS_TO_TICKS(1500));
+      gpio_set_level(LED_GPIO, 0);
+      vTaskDelay(pdMS_TO_TICKS(1500));
+    }
+  }
+}
+
 // WiFi reconnection backoff state
 static TimerHandle_t wifi_reconnect_timer = NULL;
 static uint32_t wifi_reconnect_attempts = 0;
@@ -57,6 +91,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "WiFi connecting...");
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    wifi_connected = false;
     // Calculate exponential backoff delay: 1s, 2s, 4s, 8s, 16s, 32s, 60s,
     // 60s...
     uint32_t backoff_delay_sec = 1 << wifi_reconnect_attempts; // 2^attempts
@@ -89,6 +124,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
     // Reset backoff counter on successful connection
     wifi_reconnect_attempts = 0;
+    wifi_connected = true;
 
     // Stop reconnection timer if it's running
     if (wifi_reconnect_timer != NULL) {
@@ -265,6 +301,9 @@ httpd_handle_t setup_https_server() {
 void setup() {
   ESP_LOGI(TAG, "\n\nESP32 Tang Server Starting...");
 
+  // Start LED status task
+  xTaskCreate(led_task, "led_task", 2048, NULL, 1, NULL);
+
   // 1. Initialize NVS
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -360,13 +399,22 @@ void setup() {
       esp_netif_ip_info_t ip_info;
       esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"),
                             &ip_info);
+      ESP_LOGI(TAG, "");
       ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
+      ESP_LOGI(TAG, "");
+      ESP_LOGI(TAG, "Connect using IP: " IPSTR, IP2STR(&ip_info.ip));
       ESP_LOGI(TAG, "  Hostname:    %s", device_hostname);
       ESP_LOGI(TAG, "  ZK Auth UI:  https://" IPSTR "/", IP2STR(&ip_info.ip));
       ESP_LOGI(TAG, "  Tang /adv:   http://" IPSTR "/adv", IP2STR(&ip_info.ip));
       ESP_LOGI(TAG,
                "  Tang /rec:   http://" IPSTR "/rec  (requires activation)",
                IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG, "");
+      ESP_LOGI(TAG, "Or connect using mDNS: %s.local", device_hostname);
+      ESP_LOGI(TAG, "  ZK Auth UI:  https://%s.local/", device_hostname);
+      ESP_LOGI(TAG, "  Tang /adv:   http://%s.local/adv", device_hostname);
+      ESP_LOGI(TAG, "  Tang /rec:   http://%s.local/rec  (requires activation)",
+               device_hostname);
     }
   } else {
     // Provisioning mode — no WiFi configured, start SoftAP
