@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "NixOS",
+            "compileCommands": [
+                "${workspaceFolder}/build/compile_commands.json"
+            ],
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/managed_components/**",
+                "${workspaceFolder}/managed_components/esp-cryptoauthlib/**"
+            ],
+            "compilerPath": "/nix/store/x45d95acx6rybkb5cidrxxffval9k2pg-gcc-wrapper-14.3.0/bin/gcc"
+        }
+    ],
+    "version": 4
+}

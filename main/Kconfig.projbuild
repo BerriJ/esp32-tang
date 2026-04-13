@@ -1,26 +1,32 @@
 menu "Wi-Fi Credentials"
 
 config WIFI_SSID
-    string "Wi-Fi SSID"
-    default "myssid"
+    string "Wi-Fi SSID (compile-time fallback)"
+    default ""
     help
-        SSID of the Wi-Fi network to connect to.
+        Optional compile-time fallback SSID. WiFi credentials stored in NVS
+        (via SoftAP provisioning) take priority over this value.
+        Leave empty to always use SoftAP provisioning.
 
 config WIFI_PASSWORD
-    string "Wi-Fi Password"
-    default "mypassword"
+    string "Wi-Fi Password (compile-time fallback)"
+    default ""
     help
-        Password for the Wi-Fi network.
+        Optional compile-time fallback password. WiFi credentials stored in NVS
+        (via SoftAP provisioning) take priority over this value.
 
 endmenu
 
+menu "Tang Server"
 
-menu "Tang Server Configuration"
-
-config INITIAL_TANG_PASSWORD
-    string "Initial Tang Password"
-    default "change-me"
+config NUM_EXCHANGE_KEYS
+    int "Number of active exchange keys"
+    default 3
+    range 1 16
     help
-        Initial password used by the Tang server to derive secrets.
+        Number of active exchange key generations to keep.
+        Keys are stored in a ring buffer and rotated.
+        Higher values allow clients with older keys to
+        still recover, at the cost of more NVS storage.
 
 endmenu

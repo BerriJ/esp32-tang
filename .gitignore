@@ -52,6 +52,18 @@ sdkconfig.old
 managed_components/
 .cache/
 
+# Provided by Nix flake (symlink to idf-extra-components)
+components/json_generator
+
 # Cryptographic files
 *.jwk
 *.jwe
+
+# Other Binary files
+*.pdf
+
+*secure_boot_signing_key.pem
+tee_sec_stg_hmac.bin
+tee_pbkdf2_hmac.bin
+https_server.crt
+https_server.key

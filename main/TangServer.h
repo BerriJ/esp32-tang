@@ -1,205 +1,467 @@
 #ifndef TANG_SERVER_H
 #define TANG_SERVER_H
 
-#include <WiFi.h>
-#include <WebServer.h>
-#include <ArduinoJson.h>
-#include <EEPROM.h>
 #include "sdkconfig.h"
+#include <driver/gpio.h>
+#include <esp_event.h>
+#include <esp_http_server.h>
+#include <esp_https_server.h>
+#include <esp_log.h>
+#include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+#include <freertos/task.h>
+#include <freertos/timers.h>
+#include <nvs_flash.h>
 
-// --- Compile-time Configuration ---
-// Comment out this line to disable all Serial output for a "release" build.
-#define DEBUG_SERIAL 1
+static const char *TAG = "TangServer";
 
-// --- Debug Macros ---
-#if defined(DEBUG_SERIAL) && DEBUG_SERIAL > 0
-#define DEBUG_PRINT(...) Serial.print(__VA_ARGS__)
-#define DEBUG_PRINTLN(...) Serial.println(__VA_ARGS__)
-#define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
-#else
-#define DEBUG_PRINT(...)
-#define DEBUG_PRINTLN(...)
-#define DEBUG_PRINTF(...)
-#endif
+// Core components
+#include "encoding.h"
+#include "provision.h"
+#include "tang_handlers.h"
+#include "tang_storage.h"
+#include "wifi_prov_handlers.h"
+#include "zk_auth.h"
+#include "zk_handlers.h"
 
-// --- Wi-Fi Configuration ---
-const char* wifi_ssid = CONFIG_WIFI_SSID;
-const char* wifi_password = CONFIG_WIFI_PASSWORD;
-enum WifiMode { TANG_WIFI_STA, TANG_WIFI_AP };
-WifiMode current_wifi_mode = TANG_WIFI_STA;
-unsigned long mode_switch_timestamp = 0;
-const unsigned long WIFI_MODE_DURATION = 60000; // 60 seconds
+// --- Global State ---
+bool unlocked = false;
+static bool provisioning_mode = false;
+static char device_hostname[64] = DEFAULT_HOSTNAME;
+httpd_handle_t server_http = NULL;
+httpd_handle_t server_https = NULL;
+TangKeyStore keystore;
+ZKAuth zk_auth;
 
-// --- Initial Setup Configuration ---
-const char* initial_tang_password = CONFIG_INITIAL_TANG_PASSWORD;
+// WiFi event group
+static EventGroupHandle_t wifi_event_group;
+const int WIFI_CONNECTED_BIT = BIT0;
 
-// --- Server & Crypto Globals ---
-WebServer server_http(80);
+// --- LED State ---
+#define LED_GPIO GPIO_NUM_15
+static bool wifi_connected = false;
 
-// --- Server State ---
-bool is_active = false;
-unsigned long activation_timestamp = 0;
-const unsigned long KEY_LIFETIME_MS = 3600000; // 1 hour
+static void led_task(void *arg) {
+  gpio_config_t io_conf = {
+      .pin_bit_mask = (1ULL << LED_GPIO),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&io_conf);
 
-// --- Key Storage ---
-uint8_t tang_private_key[32]; // In-memory only when active
-uint8_t tang_public_key[64];  // In-memory only when active
-uint8_t admin_private_key[32]; // Persistent in EEPROM
-uint8_t admin_public_key[64];  // Derived from private key
+  while (true) {
+    if (wifi_connected && unlocked) {
+      // Activated & connected: LED off
+      gpio_set_level(LED_GPIO, 1);
+      vTaskDelay(pdMS_TO_TICKS(200));
+    } else if (wifi_connected) {
+      // Connected but not activated: LED on
+      gpio_set_level(LED_GPIO, 0);
+      vTaskDelay(pdMS_TO_TICKS(200));
+    } else {
+      // Not connected: blink
+      gpio_set_level(LED_GPIO, 1);
+      vTaskDelay(pdMS_TO_TICKS(1500));
+      gpio_set_level(LED_GPIO, 0);
+      vTaskDelay(pdMS_TO_TICKS(1500));
+    }
+  }
+}
 
-// --- EEPROM Configuration ---
-const int EEPROM_SIZE = 4096;
-const int EEPROM_MAGIC_ADDR = 0;
-const int EEPROM_ADMIN_KEY_ADDR = 4;
-const int EEPROM_TANG_KEY_ADDR = EEPROM_ADMIN_KEY_ADDR + 32;
-const int GCM_TAG_SIZE = 16;
-const int EEPROM_TANG_TAG_ADDR = EEPROM_TANG_KEY_ADDR + 32;
-const int EEPROM_WIFI_SSID_ADDR = EEPROM_TANG_TAG_ADDR + GCM_TAG_SIZE;
-const int EEPROM_WIFI_PASS_ADDR = EEPROM_WIFI_SSID_ADDR + 33;
-const uint32_t EEPROM_MAGIC_VALUE = 0xCAFEDEAD;
+// WiFi reconnection backoff state
+static TimerHandle_t wifi_reconnect_timer = NULL;
+static uint32_t wifi_reconnect_attempts = 0;
+static const uint32_t WIFI_BACKOFF_MAX_DELAY_SEC = 60;
 
-// Forward declare functions
-void startAPMode();
-void startSTAMode();
+// --- WiFi Reconnect Timer Callback ---
+static void wifi_reconnect_timer_callback(TimerHandle_t xTimer) {
+  ESP_LOGI(TAG, "Attempting WiFi reconnection (attempt %lu)...",
+           wifi_reconnect_attempts + 1);
+  esp_wifi_connect();
+}
 
-// Include helper and handler files
-#include "helpers.h"
-#include "handlers.h"
+// --- WiFi Event Handler ---
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data) {
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    esp_wifi_connect();
+    ESP_LOGI(TAG, "WiFi connecting...");
+  } else if (event_base == WIFI_EVENT &&
+             event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    wifi_connected = false;
+    // Calculate exponential backoff delay: 1s, 2s, 4s, 8s, 16s, 32s, 60s,
+    // 60s...
+    uint32_t backoff_delay_sec = 1 << wifi_reconnect_attempts; // 2^attempts
+    if (backoff_delay_sec > WIFI_BACKOFF_MAX_DELAY_SEC) {
+      backoff_delay_sec = WIFI_BACKOFF_MAX_DELAY_SEC;
+    }
 
-// --- Main Application Logic ---
+    wifi_reconnect_attempts++;
+
+    ESP_LOGI(TAG,
+             "WiFi disconnected, reconnecting in %lu seconds (attempt %lu)...",
+             backoff_delay_sec, wifi_reconnect_attempts);
+
+    // Create timer on first disconnect, or reset existing timer
+    if (wifi_reconnect_timer == NULL) {
+      wifi_reconnect_timer = xTimerCreate(
+          "wifi_reconnect", pdMS_TO_TICKS(backoff_delay_sec * 1000),
+          pdFALSE, // One-shot timer
+          NULL, wifi_reconnect_timer_callback);
+      xTimerStart(wifi_reconnect_timer, 0);
+    } else {
+      // Update timer period and restart
+      xTimerChangePeriod(wifi_reconnect_timer,
+                         pdMS_TO_TICKS(backoff_delay_sec * 1000), 0);
+      xTimerStart(wifi_reconnect_timer, 0);
+    }
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
+
+    // Reset backoff counter on successful connection
+    wifi_reconnect_attempts = 0;
+    wifi_connected = true;
+
+    // Stop reconnection timer if it's running
+    if (wifi_reconnect_timer != NULL) {
+      xTimerStop(wifi_reconnect_timer, 0);
+    }
+
+    xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+  }
+}
+
+// --- WiFi STA Setup (normal mode) ---
+void setup_wifi_sta(const char *ssid, const char *password,
+                    const char *hostname) {
+  wifi_event_group = xEventGroupCreate();
+
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+  assert(sta_netif);
+
+  ESP_ERROR_CHECK(esp_netif_set_hostname(sta_netif, hostname));
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                             &wifi_event_handler, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                             &wifi_event_handler, NULL));
+
+  wifi_config_t wifi_config = {};
+  strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+  strncpy((char *)wifi_config.sta.password, password,
+          sizeof(wifi_config.sta.password));
+  wifi_config.sta.threshold.authmode =
+      strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+  ESP_ERROR_CHECK(esp_wifi_start());
+
+  ESP_LOGI(TAG, "Connecting to SSID: %s (hostname: %s)", ssid, hostname);
+}
+
+// --- WiFi SoftAP Setup (provisioning mode) ---
+void setup_wifi_ap() {
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_create_default_wifi_ap();
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+  wifi_config_t ap_config = {};
+  strncpy((char *)ap_config.ap.ssid, "ESP-Tang-Setup",
+          sizeof(ap_config.ap.ssid));
+  ap_config.ap.ssid_len = strlen("ESP-Tang-Setup");
+  ap_config.ap.max_connection = 2;
+  ap_config.ap.authmode = WIFI_AUTH_OPEN;
+  ap_config.ap.channel = 1;
+
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+  ESP_ERROR_CHECK(esp_wifi_start());
+
+  ESP_LOGI(TAG, "Provisioning SoftAP started: SSID='ESP-Tang-Setup'");
+  ESP_LOGI(TAG, "Connect and visit https://192.168.4.1");
+}
+
+// Embedded TLS certificate and private key (via EMBED_TXTFILES)
+extern const uint8_t server_crt_start[] asm("_binary_https_server_crt_start");
+extern const uint8_t server_crt_end[] asm("_binary_https_server_crt_end");
+extern const uint8_t server_key_start[] asm("_binary_https_server_key_start");
+extern const uint8_t server_key_end[] asm("_binary_https_server_key_end");
+
+// --- Provisioning HTTPS Server ---
+httpd_handle_t setup_provisioning_server() {
+  httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
+  config.servercert = server_crt_start;
+  config.servercert_len = server_crt_end - server_crt_start;
+  config.prvtkey_pem = server_key_start;
+  config.prvtkey_len = server_key_end - server_key_start;
+
+  config.httpd.stack_size = 10240;
+  config.httpd.max_uri_handlers = 4;
+
+  httpd_handle_t server = NULL;
+  if (httpd_ssl_start(&server, &config) == ESP_OK) {
+    register_wifi_prov_handlers(server);
+  } else {
+    ESP_LOGE(TAG, "Failed to start provisioning server");
+  }
+  return server;
+}
+
+// --- Setup HTTP Server (port 80) — Tang protocol + provisioning ---
+// Tang protocol (/adv, /rec) is cryptographically authenticated via JWS/ECDH,
+// Redirect GET / on port 80 to the HTTPS web UI.
+static esp_err_t handle_http_root_redirect(httpd_req_t *req) {
+  // Use the Host header so the redirect works with both IP and mDNS names.
+  size_t host_len = httpd_req_get_hdr_value_len(req, "Host");
+  char host[128];
+  if (host_len > 0 && host_len < sizeof(host)) {
+    httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host));
+  } else {
+    snprintf(host, sizeof(host), "%s.local", device_hostname);
+  }
+
+  // Strip port suffix if present (e.g. "host:80")
+  char *colon = strchr(host, ':');
+  if (colon) {
+    *colon = '\0';
+  }
+
+  char location[256];
+  snprintf(location, sizeof(location), "https://%s/", host);
+
+  httpd_resp_set_status(req, "301 Moved Permanently");
+  httpd_resp_set_hdr(req, "Location", location);
+  httpd_resp_sendstr(req, "Redirecting to HTTPS");
+  return ESP_OK;
+}
+
+// so TLS is not required. Running plain HTTP ensures compatibility with
+// standard tang clients (clevis) that cannot verify self-signed certificates.
+httpd_handle_t setup_plain_http_server() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.lru_purge_enable = true;
+  config.stack_size = 8192;
+  config.max_uri_handlers = 8;
+  config.uri_match_fn = httpd_uri_match_wildcard;
+
+  httpd_handle_t server = NULL;
+
+  if (httpd_start(&server, &config) == ESP_OK) {
+    httpd_uri_t adv_uri = {.uri = "/adv",
+                           .method = HTTP_GET,
+                           .handler = handle_adv,
+                           .user_ctx = NULL};
+    httpd_register_uri_handler(server, &adv_uri);
+
+    httpd_uri_t adv_uri_slash = {.uri = "/adv/",
+                                 .method = HTTP_GET,
+                                 .handler = handle_adv,
+                                 .user_ctx = NULL};
+    httpd_register_uri_handler(server, &adv_uri_slash);
+
+    httpd_uri_t rec_uri = {.uri = "/rec/*",
+                           .method = HTTP_POST,
+                           .handler = handle_rec,
+                           .user_ctx = NULL};
+    httpd_register_uri_handler(server, &rec_uri);
+
+    httpd_uri_t reboot_uri = {.uri = "/reboot",
+                              .method = HTTP_GET,
+                              .handler = handle_reboot,
+                              .user_ctx = NULL};
+    httpd_register_uri_handler(server, &reboot_uri);
+
+    httpd_uri_t root_redirect_uri = {.uri = "/",
+                                     .method = HTTP_GET,
+                                     .handler = handle_http_root_redirect,
+                                     .user_ctx = NULL};
+    httpd_register_uri_handler(server, &root_redirect_uri);
+
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
+
+    ESP_LOGI(TAG, "HTTP server listening on port 80 (Tang protocol)");
+    ESP_LOGI(TAG, "GET / on port 80 redirects to HTTPS");
+  } else {
+    ESP_LOGE(TAG, "Failed to start HTTP server");
+  }
+
+  return server;
+}
+
+// --- Setup HTTPS Server (port 443) — Web UI + ZK auth API ---
+// HTTPS provides the secure context required by the Web Crypto API.
+httpd_handle_t setup_https_server() {
+  httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
+  config.servercert = server_crt_start;
+  config.servercert_len = server_crt_end - server_crt_start;
+  config.prvtkey_pem = server_key_start;
+  config.prvtkey_len = server_key_end - server_key_start;
+
+  config.httpd.lru_purge_enable = true;
+  config.httpd.stack_size = 10240;
+  config.httpd.max_uri_handlers = 8;
+  config.httpd.uri_match_fn = httpd_uri_match_wildcard;
+
+  httpd_handle_t server = NULL;
+
+  if (httpd_ssl_start(&server, &config) == ESP_OK) {
+    register_zk_handlers(server);
+
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, handle_not_found);
+
+    ESP_LOGI(TAG, "HTTPS server listening on port 443 (Web UI)");
+  } else {
+    ESP_LOGE(TAG, "Failed to start HTTPS server");
+  }
+
+  return server;
+}
+
+// --- Main Setup ---
 void setup() {
-    Serial.begin(115200);
-    DEBUG_PRINTLN("\n\nESP32 Tang Server Starting...");
+  ESP_LOGI(TAG, "\n\nESP32 Tang Server Starting...");
 
-    EEPROM.begin(EEPROM_SIZE);
-    uint32_t magic = 0;
-    EEPROM.get(EEPROM_MAGIC_ADDR, magic);
+  // Start LED status task
+  xTaskCreate(led_task, "led_task", 2048, NULL, 1, NULL);
 
-    if (magic == EEPROM_MAGIC_VALUE) {
-        DEBUG_PRINTLN("Found existing configuration in EEPROM.");
-        // Load Admin Key
-        for (int i = 0; i < 32; ++i) admin_private_key[i] = EEPROM.read(EEPROM_ADMIN_KEY_ADDR + i);
-        compute_ec_public_key(admin_private_key, admin_public_key);
-        DEBUG_PRINTLN("Loaded admin key.");
+  // 1. Initialize NVS
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+      ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret);
+  ESP_LOGI(TAG, "NVS initialized");
 
-        // Load Wi-Fi credentials if they exist
-        if (EEPROM.read(EEPROM_WIFI_SSID_ADDR) != 0xFF && EEPROM.read(EEPROM_WIFI_SSID_ADDR) != 0) {
-            EEPROM.get(EEPROM_WIFI_SSID_ADDR, wifi_ssid);
-            EEPROM.get(EEPROM_WIFI_PASS_ADDR, wifi_password);
-            DEBUG_PRINTLN("Loaded Wi-Fi credentials from EEPROM.");
-        }
-
+  // 2. Provision eFuse KEY5 (no-op if already burned)
+  if (is_efuse_key5_hmac_up()) {
+    ESP_LOGI(TAG, "eFuse KEY5 already provisioned with HMAC_UP");
+  } else if (is_efuse_key5_free()) {
+    ESP_LOGI(TAG, "First boot — provisioning eFuse HMAC key...");
+    if (provision_efuse_key5()) {
+      ESP_LOGI(TAG, "eFuse KEY5 provisioned");
     } else {
-        DEBUG_PRINTLN("First run or NUKE'd: generating and saving new keys and certificate...");
-
-        // 1. Generate and save admin key
-        generate_ec_keypair(admin_public_key, admin_private_key);
-        for (int i = 0; i < 32; ++i) EEPROM.write(EEPROM_ADMIN_KEY_ADDR + i, admin_private_key[i]);
-
-        // 2. Generate initial Tang key and encrypt it with the default password
-        generate_ec_keypair(tang_public_key, tang_private_key);
-        uint8_t encrypted_tang_key[32];
-        uint8_t gcm_tag[GCM_TAG_SIZE];
-        memcpy(encrypted_tang_key, tang_private_key, 32);
-        crypt_local_data_gcm(encrypted_tang_key, 32, initial_tang_password, true, gcm_tag);
-        for (int i = 0; i < 32; ++i) EEPROM.write(EEPROM_TANG_KEY_ADDR + i, encrypted_tang_key[i]);
-        for (int i = 0; i < GCM_TAG_SIZE; ++i) EEPROM.write(EEPROM_TANG_TAG_ADDR + i, gcm_tag[i]);
-
-        // 3. Write magic number and commit
-        EEPROM.put(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VALUE);
-        if (EEPROM.commit()) {
-            DEBUG_PRINTLN("Initial configuration saved to EEPROM.");
-        } else {
-            DEBUG_PRINTLN("ERROR: Failed to save to EEPROM!");
-        }
+      ESP_LOGE(TAG, "eFuse KEY5 provisioning failed");
     }
+  } else {
+    ESP_LOGE(TAG, "eFuse KEY5 has wrong purpose (expected HMAC_UP) — "
+                  "HMAC key derivation will not work");
+  }
 
-    DEBUG_PRINTLN("Admin Public Key:");
-    print_hex(admin_public_key, sizeof(admin_public_key));
+  // 2b. Ensure TEE salt exists (may be missing after re-flash)
+  if (is_efuse_key5_hmac_up() && !ensure_tee_salt()) {
+    ESP_LOGE(TAG, "Failed to initialize TEE salt");
+  }
 
-    startSTAMode();
+  // 3. Initialize signing key in TEE Secure Storage (first boot generates,
+  //    subsequent boots are a no-op). Then load the public key.
+  keystore.init_signing_key();
+  if (keystore.load_signing_pub_from_tee()) {
+    ESP_LOGI(TAG, "Signing public key loaded");
+  } else {
+    ESP_LOGW(TAG, "Failed to load signing public key from TEE");
+  }
 
-    // --- Setup Server Routes ---
-    server_http.on("/adv", HTTP_GET, handleAdv);
-    server_http.on("/rec", HTTP_POST, handleRec);
-    server_http.on("/pub", HTTP_GET, handlePub);
-    server_http.on("/activate", HTTP_POST, handleActivate);
-    server_http.on("/deactivate", HTTP_GET, handleDeactivate); // Simple deactivate
-    server_http.on("/deactivate", HTTP_POST, handleDeactivate); // Deactivate and set new password
-    server_http.on("/reboot", HTTP_GET, handleReboot);
-    server_http.onNotFound(handleNotFound);
-
-    server_http.begin();
-    DEBUG_PRINTLN("HTTP server listening on port 80.");
-    if (!is_active) {
-        DEBUG_PRINTLN("Server is INACTIVE. POST to /activate to enable Tang services.");
+  // 4. Load exchange public keys if available (for /adv before activation)
+  if (keystore.has_exchange_key()) {
+    if (keystore.load_exchange_pubs()) {
+      ESP_LOGI(TAG, "Exchange public keys loaded (gen %u) — /adv available",
+               keystore.gen);
     }
+  } else {
+    ESP_LOGI(TAG, "No exchange keys yet — will be created on first password");
+  }
+
+  // 5. Initialize Zero-Knowledge Authentication (ephemeral tunnel key)
+  ESP_LOGI(TAG, "Initializing Zero-Knowledge Authentication...");
+  if (zk_auth.init()) {
+    ESP_LOGI(TAG, "ZK Auth initialized successfully");
+  } else {
+    ESP_LOGW(TAG, "ZK Auth initialization failed");
+  }
+
+  // 6. Determine WiFi configuration: NVS → Kconfig fallback → SoftAP
+  char wifi_ssid[33] = {};
+  char wifi_password[65] = {};
+  char hostname[64] = {};
+
+  bool has_nvs_wifi = read_wifi_config_from_nvs(
+      wifi_ssid, sizeof(wifi_ssid), wifi_password, sizeof(wifi_password),
+      hostname, sizeof(hostname));
+
+  // Fall back to Kconfig values if NVS has no WiFi config
+  if (!has_nvs_wifi && strlen(CONFIG_WIFI_SSID) > 0) {
+    strncpy(wifi_ssid, CONFIG_WIFI_SSID, sizeof(wifi_ssid) - 1);
+    strncpy(wifi_password, CONFIG_WIFI_PASSWORD, sizeof(wifi_password) - 1);
+    ESP_LOGI(TAG, "Using compile-time WiFi credentials");
+  }
+
+  // Apply hostname (NVS value or default)
+  if (strlen(hostname) > 0) {
+    strncpy(device_hostname, hostname, sizeof(device_hostname) - 1);
+  }
+
+  if (strlen(wifi_ssid) > 0) {
+    // Normal mode — connect to WiFi and start servers
+    setup_wifi_sta(wifi_ssid, wifi_password, device_hostname);
+
+    // Wait for WiFi to connect before starting servers — avoids TLS
+    // handshake failures from clients connecting before the network is ready.
+    ESP_LOGI(TAG, "Waiting for WiFi connection...");
+    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
+                        portMAX_DELAY);
+
+    server_http = setup_plain_http_server();
+    server_https = setup_https_server();
+
+    if (server_http && server_https) {
+      esp_netif_ip_info_t ip_info;
+      esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"),
+                            &ip_info);
+      ESP_LOGI(TAG, "");
+      ESP_LOGI(TAG, "=== ESP32 Tang Server Ready ===");
+      ESP_LOGI(TAG, "");
+      ESP_LOGI(TAG, "Connect using IP: " IPSTR, IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG, "  Hostname:    %s", device_hostname);
+      ESP_LOGI(TAG, "  ZK Auth UI:  https://" IPSTR "/", IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG, "  Tang /adv:   http://" IPSTR "/adv", IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG,
+               "  Tang /rec:   http://" IPSTR "/rec  (requires activation)",
+               IP2STR(&ip_info.ip));
+      ESP_LOGI(TAG, "");
+      ESP_LOGI(TAG, "Or connect using mDNS: %s.local", device_hostname);
+      ESP_LOGI(TAG, "  ZK Auth UI:  https://%s.local/", device_hostname);
+      ESP_LOGI(TAG, "  Tang /adv:   http://%s.local/adv", device_hostname);
+      ESP_LOGI(TAG, "  Tang /rec:   http://%s.local/rec  (requires activation)",
+               device_hostname);
+    }
+  } else {
+    // Provisioning mode — no WiFi configured, start SoftAP
+    provisioning_mode = true;
+    setup_wifi_ap();
+    setup_provisioning_server();
+
+    ESP_LOGI(TAG, "=== WiFi Provisioning Mode ===");
+    ESP_LOGI(TAG, "  Connect to WiFi: ESP-Tang-Setup");
+    ESP_LOGI(TAG, "  Then visit:      https://192.168.4.1");
+  }
 }
 
-void loop() {
-    // --- Check for Serial Commands ---
-    if (Serial.available() > 0) {
-        String command = Serial.readStringUntil('\n');
-        command.trim();
-        if (command.equalsIgnoreCase("NUKE")) {
-            DEBUG_PRINTLN("!!! NUKE command received! Wiping configuration...");
-            // By writing a different value to the magic address, we force
-            // the setup() function to re-initialize everything on next boot.
-            EEPROM.put(EEPROM_MAGIC_ADDR, (uint32_t)0x00);
-            if (EEPROM.commit()) {
-                DEBUG_PRINTLN("Configuration wiped. Restarting device.");
-            } else {
-                DEBUG_PRINTLN("ERROR: Failed to wipe configuration!");
-            }
-            delay(1000);
-            ESP.restart();
-        }
-    }
-
-    // --- Wi-Fi Connection Management ---
-    if (WiFi.status() != WL_CONNECTED) {
-        if (millis() - mode_switch_timestamp > WIFI_MODE_DURATION) {
-            if (current_wifi_mode == TANG_WIFI_STA) {
-                startAPMode();
-            } else {
-                startSTAMode();
-            }
-        }
-        if (current_wifi_mode == TANG_WIFI_STA) {
-            // Print a dot every so often while trying to connect
-            if ((millis() % 2000) < 50) DEBUG_PRINT(".");
-        }
-    }
-
-    // --- Automatic Deactivation Timer ---
-    if (is_active && (millis() - activation_timestamp > KEY_LIFETIME_MS)) {
-        DEBUG_PRINTLN("Key lifetime expired. Deactivating server automatically.");
-        deactivate_server();
-    }
-
-    server_http.handleClient();
-}
-
-// --- WiFi Mode Management ---
-void startAPMode() {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("Tang-Server-Setup", NULL);
-    DEBUG_PRINTLN("\nStarting Access Point 'Tang-Server-Setup'.");
-    DEBUG_PRINTF("AP IP address: %s\n", WiFi.softAPIP().toString().c_str());
-    current_wifi_mode = TANG_WIFI_AP;
-    mode_switch_timestamp = millis();
-}
-
-void startSTAMode() {
-    WiFi.mode(WIFI_STA);
-    if(strlen(wifi_ssid) > 0) {
-        WiFi.begin(wifi_ssid, wifi_password);
-        DEBUG_PRINTF("\nConnecting to SSID: %s ", wifi_ssid);
-    } else {
-        DEBUG_PRINTLN("\nNo WiFi SSID configured. Skipping connection attempt.");
-    }
-    current_wifi_mode = TANG_WIFI_STA;
-    mode_switch_timestamp = millis();
-}
+// --- Main Loop ---
+void loop() { vTaskDelay(pdMS_TO_TICKS(1000)); }
 
 #endif // TANG_SERVER_H

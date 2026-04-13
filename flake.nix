@@ -2,58 +2,85 @@
   description = "ESP32 Tang Server Development Environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    nixpkgs-esp-dev.url = "github:mirrexagon/nixpkgs-esp-dev";
+    nixpkgs-esp-dev = {
+      url = "github:mirrexagon/nixpkgs-esp-dev";
+    };
+    nixpkgs.follows = "nixpkgs-esp-dev/nixpkgs";
+    idf-extra-components = {
+      url = "github:espressif/idf-extra-components";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, nixpkgs-esp-dev }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      nixpkgs-esp-dev,
+      idf-extra-components,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
-        pkgs = nixpkgs.legacyPackages.${system}.extend nixpkgs-esp-dev.overlays.default;
+        pkgs = import nixpkgs {
+          inherit system;
+          config = {
+            permittedInsecurePackages = [
+              "python3.13-ecdsa-0.19.1"
+            ];
+          };
+          overlays = [ nixpkgs-esp-dev.overlays.default ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
           name = "esp32-tang-dev";
 
-          buildInputs = with pkgs; [
-            # ESP-IDF with full toolchain
-            esp-idf-full
-            jose
-            clevis
+          buildInputs =
+            with pkgs;
+            [
+              python3Packages.pandas
 
-            # Development tools
-            gnumake
-            cmake
-            ninja
-            ccache
+              # ESP-IDF with full toolchain
+              esp-idf-full
+              jose
+              clevis
 
-            # Serial communication tools
-            picocom
-            screen
-            minicom
+              # Development tools
+              gnumake
+              cmake
+              ninja
+              ccache
 
-            # Development utilities
-            curl
-            wget
-            unzip
-            file
-            which
-            jq
+              # Serial communication tools
+              picocom
+              screen
+              minicom
 
-            # Text processing tools
-            gawk
-            gnused
-            gnugrep
+              # Development utilities
+              curl
+              wget
+              unzip
+              file
+              which
+              jq
 
-            # Optional development tools
-            clang-tools
-            bear
-          ] ++ lib.optionals stdenv.isLinux [
-            # Linux-specific packages for USB device access
-            udev
-            libusb1
-          ];
+              # Text processing tools
+              gawk
+              gnused
+              gnugrep
+
+              # Optional development tools
+              clang-tools
+              bear
+            ]
+            ++ lib.optionals stdenv.isLinux [
+              # Linux-specific packages for USB device access
+              udev
+              libusb1
+            ];
 
           shellHook = ''
             echo "🚀 ESP32 Tang Server Development Environment"
@@ -88,6 +115,14 @@
             export IDF_TOOLS_PATH="$HOME/.espressif"
             export CCACHE_DIR="$HOME/.ccache"
 
+            # Provide real json_generator from Nix (needed for TEE attestation)
+            _JG_NIX="${idf-extra-components}/json_generator"
+            _JG_LOCAL="$PWD/components/json_generator"
+            if [ -L "$_JG_LOCAL" ] || [ ! -e "$_JG_LOCAL/src" ]; then
+              rm -rf "$_JG_LOCAL"
+              ln -sf "$_JG_NIX" "$_JG_LOCAL"
+            fi
+
             # Create necessary directories
             mkdir -p "$IDF_TOOLS_PATH"
             mkdir -p "$CCACHE_DIR"
@@ -118,11 +153,18 @@
           '';
 
           # allow /dev/ access
-          extraDevPaths = [ "/dev/ttyUSB*" "/dev/ttyACM*" ];
+          extraDevPaths = [
+            "/dev/ttyUSB*"
+            "/dev/ttyACM*"
+          ];
 
           # Environment variables
           IDF_TOOLS_PATH = "$HOME/.espressif";
           CCACHE_DIR = "$HOME/.ccache";
+
+          # Disable IDF component manager — the TEE subproject's idf_component.yml
+          # lives in the read-only Nix store. We provide json_generator via Nix instead.
+          IDF_COMPONENT_MANAGER = "0";
 
           # Prevent Python from creating __pycache__ directories
           PYTHONDONTWRITEBYTECODE = "1";
@@ -152,9 +194,23 @@
             export IDF_TOOLS_PATH="$HOME/.espressif"
             export CCACHE_DIR="$HOME/.ccache"
             mkdir -p "$CCACHE_DIR"
+
+            # Provide real json_generator from Nix (needed for TEE attestation)
+            _JG_NIX="${idf-extra-components}/json_generator"
+            _JG_LOCAL="$PWD/components/json_generator"
+            if [ -L "$_JG_LOCAL" ] || [ ! -e "$_JG_LOCAL/src" ]; then
+              rm -rf "$_JG_LOCAL"
+              ln -sf "$_JG_NIX" "$_JG_LOCAL"
+            fi
           '';
 
-          extraDevPaths = [ "/dev/ttyUSB*" "/dev/ttyACM*" ];
+          # Disable IDF component manager for Nix compatibility
+          IDF_COMPONENT_MANAGER = "0";
+
+          extraDevPaths = [
+            "/dev/ttyUSB*"
+            "/dev/ttyACM*"
+          ];
         };
       }
     );

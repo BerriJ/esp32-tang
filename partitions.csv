@@ -1,0 +1,7 @@
+# Name,         Type, SubType,  Offset,   Size
+tee_0,          app,  tee_0,    0x20000,  192K,
+secure_storage, data, nvs,      0x50000,  64K,
+factory,        app,  factory,  0x60000,  1216K,
+nvs,            data, nvs,      0x190000, 24K,
+phy_init,       data, phy,      0x196000, 4K,
+nvs_keys,       data, nvs_keys, 0x197000, 4K,
