@@ -248,6 +248,45 @@ static esp_err_t handle_http_root_redirect(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static esp_err_t status_get_handler(httpd_req_t *req) {
+  uint32_t free_heap = esp_get_free_heap_size();
+  uint32_t min_free = esp_get_minimum_free_heap_size();
+  uint32_t max_alloc = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  uint32_t uptime_secs = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON_AddNumberToObject(root, "uptime", uptime_secs);
+  cJSON_AddNumberToObject(root, "unlocked", unlocked);
+
+  cJSON *heap_obj = cJSON_AddObjectToObject(root, "heap");
+
+  if (heap_obj != NULL) {
+    cJSON_AddNumberToObject(heap_obj, "free_now", free_heap);
+    cJSON_AddNumberToObject(heap_obj, "free_min", min_free);
+    cJSON_AddNumberToObject(heap_obj, "max_alloc_block", max_alloc);
+  }
+
+  char *json_string = cJSON_PrintUnformatted(root);
+
+  if (json_string == NULL) {
+    cJSON_Delete(root);
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t res = httpd_resp_send(req, json_string, HTTPD_RESP_USE_STRLEN);
+
+  cJSON_free(json_string); // Frees the serialized string buffer
+  cJSON_Delete(root);      // Frees the JSON object tree
+
+  return res;
+}
 // so TLS is not required. Running plain HTTP ensures compatibility with
 // standard tang clients (clevis) that cannot verify self-signed certificates.
 httpd_handle_t setup_plain_http_server() {
@@ -260,6 +299,12 @@ httpd_handle_t setup_plain_http_server() {
   httpd_handle_t server = NULL;
 
   if (httpd_start(&server, &config) == ESP_OK) {
+    httpd_uri_t status_uri = {.uri = "/status",
+                              .method = HTTP_GET,
+                              .handler = status_get_handler,
+                              .user_ctx = NULL};
+    httpd_register_uri_handler(server, &status_uri);
+
     httpd_uri_t adv_uri = {.uri = "/adv",
                            .method = HTTP_GET,
                            .handler = handle_adv,
