@@ -291,12 +291,10 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
 // standard tang clients (clevis) that cannot verify self-signed certificates.
 httpd_handle_t setup_plain_http_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_req_hdr_len = 8192;
   config.lru_purge_enable = true;
-  config.stack_size = 16384;
+  config.stack_size = 8192;
   config.max_uri_handlers = 8;
   config.uri_match_fn = httpd_uri_match_wildcard;
-  config.max_open_sockets = 1;
 
   httpd_handle_t server = NULL;
 
@@ -358,11 +356,9 @@ httpd_handle_t setup_https_server() {
   config.prvtkey_len = server_key_end - server_key_start;
 
   config.httpd.lru_purge_enable = true;
-  config.httpd.stack_size = 20480;
+  config.httpd.stack_size = 10240;
   config.httpd.max_uri_handlers = 8;
   config.httpd.uri_match_fn = httpd_uri_match_wildcard;
-  config.httpd.max_req_hdr_len = 16384;
-  config.httpd.max_open_sockets = 1;
 
   httpd_handle_t server = NULL;
 
