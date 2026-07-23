@@ -16,6 +16,7 @@ static const char *TAG_HANDLERS = "tang_handlers";
 extern httpd_handle_t server_http;
 extern TangKeyStore keystore;
 extern bool unlocked;
+extern volatile bool led_recovery_blink;
 
 // GET /adv - Advertisement endpoint (signed JWK set)
 // Advertises only the newest exchange key (gen, at slot gen%NUM_EXCHANGE_KEYS).
@@ -253,6 +254,7 @@ static esp_err_t perform_rec(httpd_req_t *req, unsigned int generation) {
   httpd_resp_sendstr(req, response);
   free(response);
 
+  led_recovery_blink = true;
   ESP_LOGI(TAG_HANDLERS, "Served %s (gen %u)", req->uri, generation);
   return ESP_OK;
 }

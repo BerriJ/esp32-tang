@@ -41,6 +41,7 @@ const int WIFI_CONNECTED_BIT = BIT0;
 // --- LED State ---
 #define LED_GPIO GPIO_NUM_15
 static bool wifi_connected = false;
+volatile bool led_recovery_blink = false;
 
 static void led_task(void *arg) {
   gpio_config_t io_conf = {
@@ -53,7 +54,16 @@ static void led_task(void *arg) {
   gpio_config(&io_conf);
 
   while (true) {
-    if (wifi_connected && unlocked) {
+    if (led_recovery_blink) {
+      led_recovery_blink = false;
+      // Double-blink: visual feedback for recovery endpoint
+      for (int i = 0; i < 2; i++) {
+        gpio_set_level(LED_GPIO, 0); // on
+        vTaskDelay(pdMS_TO_TICKS(50));
+        gpio_set_level(LED_GPIO, 1); // off
+        vTaskDelay(pdMS_TO_TICKS(50));
+      }
+    } else if (wifi_connected && unlocked) {
       // Activated & connected: LED off
       gpio_set_level(LED_GPIO, 1);
       vTaskDelay(pdMS_TO_TICKS(200));
