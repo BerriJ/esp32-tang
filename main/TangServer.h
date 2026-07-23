@@ -366,6 +366,7 @@ httpd_handle_t setup_https_server() {
   config.prvtkey_len = server_key_end - server_key_start;
 
   config.httpd.lru_purge_enable = true;
+  config.httpd.max_req_hdr_len = 16384;
   config.httpd.stack_size = 10240;
   config.httpd.max_uri_handlers = 8;
   config.httpd.uri_match_fn = httpd_uri_match_wildcard;
