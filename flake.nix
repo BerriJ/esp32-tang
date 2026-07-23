@@ -18,6 +18,7 @@
       nixpkgs,
       flake-utils,
       nixpkgs-esp-dev,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
