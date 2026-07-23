@@ -15,10 +15,10 @@
 #include "nvs.h"
 #include "secure_service_num.h"
 
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/ecp.h>
 #include <mbedtls/platform_util.h>
-#include <mbedtls/sha256.h>
+#include <mbedtls/ecp.h>
+#include <mbedtls/bignum.h>
+#include <psa/crypto.h>
 #include <inttypes.h>
 #include <string.h>
 
@@ -119,60 +119,21 @@ static int tee_rng(void *ctx, unsigned char *buf, size_t len) {
 static int hmac_sha256(const uint8_t *key, size_t key_len,
                        const uint8_t *msg, size_t msg_len,
                        uint8_t out[32]) {
-  uint8_t k_pad[64];
-  uint8_t inner_hash[32];
-  int ret;
+  psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attr, PSA_KEY_TYPE_HMAC);
+  psa_set_key_algorithm(&attr, PSA_ALG_HMAC(PSA_ALG_SHA_256));
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
 
-  /* If key > block size, hash it first (not needed here, our key is 32 bytes) */
-  memset(k_pad, 0, sizeof(k_pad));
-  if (key_len <= 64) {
-    memcpy(k_pad, key, key_len);
-  } else {
-    ret = mbedtls_sha256(key, key_len, k_pad, 0);
-    if (ret != 0)
-      return ret;
-  }
+  psa_key_id_t key_id = PSA_KEY_ID_NULL;
+  psa_status_t status = psa_import_key(&attr, key, key_len, &key_id);
+  if (status != PSA_SUCCESS)
+    return -1;
 
-  /* Inner hash: SHA256((K xor ipad) || msg) */
-  mbedtls_sha256_context ctx;
-  mbedtls_sha256_init(&ctx);
-
-  uint8_t ipad[64];
-  for (int i = 0; i < 64; i++)
-    ipad[i] = k_pad[i] ^ 0x36;
-
-  ret = mbedtls_sha256_starts(&ctx, 0);
-  if (ret == 0)
-    ret = mbedtls_sha256_update(&ctx, ipad, 64);
-  if (ret == 0)
-    ret = mbedtls_sha256_update(&ctx, msg, msg_len);
-  if (ret == 0)
-    ret = mbedtls_sha256_finish(&ctx, inner_hash);
-  mbedtls_sha256_free(&ctx);
-  if (ret != 0)
-    return ret;
-
-  /* Outer hash: SHA256((K xor opad) || inner_hash) */
-  mbedtls_sha256_init(&ctx);
-
-  uint8_t opad[64];
-  for (int i = 0; i < 64; i++)
-    opad[i] = k_pad[i] ^ 0x5c;
-
-  ret = mbedtls_sha256_starts(&ctx, 0);
-  if (ret == 0)
-    ret = mbedtls_sha256_update(&ctx, opad, 64);
-  if (ret == 0)
-    ret = mbedtls_sha256_update(&ctx, inner_hash, 32);
-  if (ret == 0)
-    ret = mbedtls_sha256_finish(&ctx, out);
-  mbedtls_sha256_free(&ctx);
-
-  mbedtls_platform_zeroize(k_pad, sizeof(k_pad));
-  mbedtls_platform_zeroize(inner_hash, sizeof(inner_hash));
-  mbedtls_platform_zeroize(ipad, sizeof(ipad));
-  mbedtls_platform_zeroize(opad, sizeof(opad));
-  return ret;
+  size_t mac_len;
+  status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256),
+                           msg, msg_len, out, 32, &mac_len);
+  psa_destroy_key(key_id);
+  return (status == PSA_SUCCESS) ? 0 : -1;
 }
 
 /**
@@ -197,29 +158,29 @@ static int derive_ec_private_key(const uint8_t *mk, const uint8_t *info,
  * Compute P-256 public key from private key: Q = d * G
  */
 static int compute_public_key(const uint8_t *priv, uint8_t *pub) {
-  mbedtls_ecp_group grp;
-  mbedtls_ecp_point Q;
-  mbedtls_mpi d;
+  /* pub layout: X(32) || Y(32) — no 0x04 prefix */
+  psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+  psa_set_key_bits(&attr, 256);
+  psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+  psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
 
-  mbedtls_ecp_group_init(&grp);
-  mbedtls_ecp_point_init(&Q);
-  mbedtls_mpi_init(&d);
+  psa_key_id_t key_id = PSA_KEY_ID_NULL;
+  psa_status_t status = psa_import_key(&attr, priv, EC_PRIV_SIZE, &key_id);
+  if (status != PSA_SUCCESS)
+    return -1;
 
-  int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-  if (ret == 0)
-    ret = mbedtls_mpi_read_binary(&d, priv, EC_PRIV_SIZE);
-  if (ret == 0)
-    ret = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, tee_rng, NULL);
-  if (ret == 0)
-    ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), pub, EC_COORD_SIZE);
-  if (ret == 0)
-    ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y), pub + EC_COORD_SIZE,
-                                   EC_COORD_SIZE);
+  uint8_t pub_uncompressed[65]; /* 0x04 || X(32) || Y(32) */
+  size_t pub_len;
+  status = psa_export_public_key(key_id, pub_uncompressed,
+                                 sizeof(pub_uncompressed), &pub_len);
+  psa_destroy_key(key_id);
 
-  mbedtls_ecp_group_free(&grp);
-  mbedtls_ecp_point_free(&Q);
-  mbedtls_mpi_free(&d);
-  return ret;
+  if (status != PSA_SUCCESS || pub_len != 65 || pub_uncompressed[0] != 0x04)
+    return -1;
+
+  memcpy(pub, pub_uncompressed + 1, EC_PUB_SIZE);
+  return 0;
 }
 
 /* Derive exchange key for a generation from an explicit master key */

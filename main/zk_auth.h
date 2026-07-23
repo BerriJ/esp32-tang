@@ -12,14 +12,8 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <inttypes.h>
-#include <mbedtls/aes.h>
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/ecdh.h>
-#include <mbedtls/ecp.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/md.h>
 #include <mbedtls/platform_util.h>
-#include <mbedtls/sha256.h>
+#include <psa/crypto.h>
 #include <string.h>
 
 // Zero-Knowledge Authentication Module
@@ -37,11 +31,7 @@ static const char *TAG_ZK_AUTH = "zk_auth";
 
 class ZKAuth {
 private:
-  mbedtls_ecp_group grp;
-  mbedtls_mpi device_private_d;
-  mbedtls_ecp_point device_public_Q;
-  mbedtls_entropy_context entropy;
-  mbedtls_ctr_drbg_context ctr_drbg;
+  psa_key_id_t device_key_id;
 
   uint8_t device_public_key[65]; // Uncompressed P-256: 0x04 + X(32) + Y(32)
 
@@ -133,54 +123,34 @@ private:
       return NULL;
     }
 
-    mbedtls_ecp_point client_point;
-    mbedtls_ecp_point_init(&client_point);
-    int ret = mbedtls_ecp_point_read_binary(&grp, &client_point, client_pub_bin,
-                                            client_pub_len);
+    uint8_t shared_secret_raw[32];
+    size_t shared_len;
+    psa_status_t psa_ret = psa_raw_key_agreement(
+        PSA_ALG_ECDH, device_key_id, client_pub_bin, client_pub_len,
+        shared_secret_raw, sizeof(shared_secret_raw), &shared_len);
     free(client_pub_bin);
-    if (ret != 0) {
-      mbedtls_ecp_point_free(&client_point);
-      *error_json = strdup("{\"error\":\"Invalid client public key\"}");
-      return NULL;
-    }
-
-    mbedtls_mpi shared_secret_mpi;
-    mbedtls_mpi_init(&shared_secret_mpi);
-    ret = mbedtls_ecdh_compute_shared(&grp, &shared_secret_mpi, &client_point,
-                                      &device_private_d,
-                                      mbedtls_ctr_drbg_random, &ctr_drbg);
-    mbedtls_ecp_point_free(&client_point);
-    if (ret != 0) {
-      mbedtls_mpi_free(&shared_secret_mpi);
+    if (psa_ret != PSA_SUCCESS || shared_len != 32) {
       *error_json = strdup("{\"error\":\"ECDH failed\"}");
       return NULL;
     }
 
-    uint8_t shared_secret_raw[32];
-    ret = mbedtls_mpi_write_binary(&shared_secret_mpi, shared_secret_raw, 32);
-    mbedtls_mpi_free(&shared_secret_mpi);
-    if (ret != 0) {
-      *error_json = strdup("{\"error\":\"Shared secret export failed\"}");
-      return NULL;
-    }
-
-    const mbedtls_md_info_t *md_info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     uint8_t enc_key[32], mac_key[32];
-    mbedtls_md_context_t md_ctx;
-    mbedtls_md_init(&md_ctx);
-    mbedtls_md_setup(&md_ctx, md_info, 0);
-
-    mbedtls_md_starts(&md_ctx);
-    mbedtls_md_update(&md_ctx, (const uint8_t *)"encryption", 10);
-    mbedtls_md_update(&md_ctx, shared_secret_raw, sizeof(shared_secret_raw));
-    mbedtls_md_finish(&md_ctx, enc_key);
-
-    mbedtls_md_starts(&md_ctx);
-    mbedtls_md_update(&md_ctx, (const uint8_t *)"authentication", 14);
-    mbedtls_md_update(&md_ctx, shared_secret_raw, sizeof(shared_secret_raw));
-    mbedtls_md_finish(&md_ctx, mac_key);
-    mbedtls_md_free(&md_ctx);
+    {
+      size_t hash_len;
+      psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+      psa_hash_setup(&op, PSA_ALG_SHA_256);
+      psa_hash_update(&op, (const uint8_t *)"encryption", 10);
+      psa_hash_update(&op, shared_secret_raw, sizeof(shared_secret_raw));
+      psa_hash_finish(&op, enc_key, sizeof(enc_key), &hash_len);
+    }
+    {
+      size_t hash_len;
+      psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+      psa_hash_setup(&op, PSA_ALG_SHA_256);
+      psa_hash_update(&op, (const uint8_t *)"authentication", 14);
+      psa_hash_update(&op, shared_secret_raw, sizeof(shared_secret_raw));
+      psa_hash_finish(&op, mac_key, sizeof(mac_key), &hash_len);
+    }
 
     mbedtls_platform_zeroize(shared_secret_raw, sizeof(shared_secret_raw));
 
@@ -214,15 +184,32 @@ private:
     uint8_t *received_hmac = blob + 16 + ct_len;
 
     uint8_t computed_hmac[32];
-    ret =
-        mbedtls_md_hmac(md_info, mac_key, 32, blob, 16 + ct_len, computed_hmac);
-    mbedtls_platform_zeroize(mac_key, 32);
-
-    if (ret != 0) {
-      free(blob);
-      mbedtls_platform_zeroize(enc_key, 32);
-      *error_json = strdup("{\"error\":\"HMAC computation failed\"}");
-      return NULL;
+    {
+      psa_key_attributes_t mac_attr = PSA_KEY_ATTRIBUTES_INIT;
+      psa_set_key_type(&mac_attr, PSA_KEY_TYPE_HMAC);
+      psa_set_key_algorithm(&mac_attr, PSA_ALG_HMAC(PSA_ALG_SHA_256));
+      psa_set_key_usage_flags(&mac_attr, PSA_KEY_USAGE_SIGN_MESSAGE);
+      psa_key_id_t hmac_key_id = PSA_KEY_ID_NULL;
+      psa_status_t mac_ret =
+          psa_import_key(&mac_attr, mac_key, 32, &hmac_key_id);
+      mbedtls_platform_zeroize(mac_key, 32);
+      if (mac_ret != PSA_SUCCESS) {
+        free(blob);
+        mbedtls_platform_zeroize(enc_key, 32);
+        *error_json = strdup("{\"error\":\"HMAC setup failed\"}");
+        return NULL;
+      }
+      size_t mac_out_len;
+      mac_ret = psa_mac_compute(hmac_key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256),
+                                blob, 16 + ct_len, computed_hmac,
+                                sizeof(computed_hmac), &mac_out_len);
+      psa_destroy_key(hmac_key_id);
+      if (mac_ret != PSA_SUCCESS) {
+        free(blob);
+        mbedtls_platform_zeroize(enc_key, 32);
+        *error_json = strdup("{\"error\":\"HMAC computation failed\"}");
+        return NULL;
+      }
     }
 
     int hmac_result = 0;
@@ -238,28 +225,62 @@ private:
       return NULL;
     }
 
-    mbedtls_aes_context aes;
-    mbedtls_aes_init(&aes);
-    ret = mbedtls_aes_setkey_dec(&aes, enc_key, 256);
+    psa_key_attributes_t aes_attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&aes_attr, PSA_KEY_TYPE_AES);
+    psa_set_key_algorithm(&aes_attr, PSA_ALG_CBC_NO_PADDING);
+    psa_set_key_usage_flags(&aes_attr, PSA_KEY_USAGE_DECRYPT);
+    psa_key_id_t aes_key_id = PSA_KEY_ID_NULL;
+    psa_status_t aes_ret = psa_import_key(&aes_attr, enc_key, 32, &aes_key_id);
     mbedtls_platform_zeroize(enc_key, 32);
 
-    if (ret != 0) {
-      mbedtls_aes_free(&aes);
+    if (aes_ret != PSA_SUCCESS) {
       free(blob);
       *error_json = strdup("{\"error\":\"AES setup failed\"}");
       return NULL;
     }
 
     uint8_t *plaintext = (uint8_t *)malloc(ct_len);
-    uint8_t iv_copy[16];
-    memcpy(iv_copy, iv, 16);
+    if (!plaintext) {
+      psa_destroy_key(aes_key_id);
+      free(blob);
+      *error_json = strdup("{\"error\":\"Memory allocation failed\"}");
+      return NULL;
+    }
 
-    ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, ct_len, iv_copy,
-                                ciphertext, plaintext);
-    mbedtls_aes_free(&aes);
+    psa_cipher_operation_t cipher_op = PSA_CIPHER_OPERATION_INIT;
+    aes_ret = psa_cipher_decrypt_setup(&cipher_op, aes_key_id,
+                                       PSA_ALG_CBC_NO_PADDING);
+    psa_destroy_key(aes_key_id);
+    if (aes_ret != PSA_SUCCESS) {
+      free(plaintext);
+      free(blob);
+      *error_json = strdup("{\"error\":\"AES setup failed\"}");
+      return NULL;
+    }
+
+    aes_ret = psa_cipher_set_iv(&cipher_op, iv, 16);
+    if (aes_ret != PSA_SUCCESS) {
+      psa_cipher_abort(&cipher_op);
+      free(plaintext);
+      free(blob);
+      *error_json = strdup("{\"error\":\"AES IV setup failed\"}");
+      return NULL;
+    }
+
+    size_t out1 = 0, out2 = 0;
+    aes_ret = psa_cipher_update(&cipher_op, ciphertext, ct_len, plaintext,
+                                ct_len, &out1);
     free(blob);
+    if (aes_ret != PSA_SUCCESS) {
+      psa_cipher_abort(&cipher_op);
+      free(plaintext);
+      *error_json = strdup("{\"error\":\"Decryption failed\"}");
+      return NULL;
+    }
 
-    if (ret != 0) {
+    aes_ret =
+        psa_cipher_finish(&cipher_op, plaintext + out1, ct_len - out1, &out2);
+    if (aes_ret != PSA_SUCCESS) {
       free(plaintext);
       *error_json = strdup("{\"error\":\"Decryption failed\"}");
       return NULL;
@@ -315,37 +336,23 @@ private:
   }
 
 public:
-  ZKAuth() : initialized(false), failed_attempts(0), lockout_until_us(0) {
-    mbedtls_ecp_group_init(&grp);
-    mbedtls_mpi_init(&device_private_d);
-    mbedtls_ecp_point_init(&device_public_Q);
-    mbedtls_entropy_init(&entropy);
-    mbedtls_ctr_drbg_init(&ctr_drbg);
-  }
+  ZKAuth()
+      : device_key_id(PSA_KEY_ID_NULL), initialized(false), failed_attempts(0),
+        lockout_until_us(0) {}
 
   ~ZKAuth() {
-    mbedtls_ecp_group_free(&grp);
-    mbedtls_mpi_free(&device_private_d);
-    mbedtls_ecp_point_free(&device_public_Q);
-    mbedtls_entropy_free(&entropy);
-    mbedtls_ctr_drbg_free(&ctr_drbg);
+    if (device_key_id != PSA_KEY_ID_NULL) {
+      psa_destroy_key(device_key_id);
+    }
   }
 
   bool init() {
     if (initialized)
       return true;
 
-    const char *pers = "zk_auth_esp32";
-    int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
-                                    (const unsigned char *)pers, strlen(pers));
-    if (ret != 0) {
-      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ctr_drbg_seed failed: -0x%04x", -ret);
-      return false;
-    }
-
-    ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
-    if (ret != 0) {
-      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecp_group_load failed: -0x%04x", -ret);
+    psa_status_t psa_ret = psa_crypto_init();
+    if (psa_ret != PSA_SUCCESS) {
+      ESP_LOGE(TAG_ZK_AUTH, "psa_crypto_init failed: %d", (int)psa_ret);
       return false;
     }
 
@@ -363,20 +370,30 @@ public:
   // Generate a fresh ephemeral ECDH keypair for the ECIES tunnel.
   // Called at init and after every use to provide forward secrecy.
   bool regenerate_tunnel_key() {
-    int ret = mbedtls_ecdh_gen_public(&grp, &device_private_d, &device_public_Q,
-                                      mbedtls_ctr_drbg_random, &ctr_drbg);
-    if (ret != 0) {
-      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecdh_gen_public failed: -0x%04x", -ret);
+    if (device_key_id != PSA_KEY_ID_NULL) {
+      psa_destroy_key(device_key_id);
+      device_key_id = PSA_KEY_ID_NULL;
+    }
+
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
+
+    psa_status_t psa_ret = psa_generate_key(&attr, &device_key_id);
+    if (psa_ret != PSA_SUCCESS) {
+      ESP_LOGE(TAG_ZK_AUTH, "psa_generate_key failed: %d", (int)psa_ret);
       return false;
     }
 
-    size_t olen;
-    ret = mbedtls_ecp_point_write_binary(
-        &grp, &device_public_Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen,
-        device_public_key, sizeof(device_public_key));
-    if (ret != 0 || olen != 65) {
-      ESP_LOGE(TAG_ZK_AUTH, "mbedtls_ecp_point_write_binary failed: -0x%04x",
-               -ret);
+    size_t pub_len;
+    psa_ret = psa_export_public_key(device_key_id, device_public_key,
+                                    sizeof(device_public_key), &pub_len);
+    if (psa_ret != PSA_SUCCESS || pub_len != 65) {
+      ESP_LOGE(TAG_ZK_AUTH, "psa_export_public_key failed: %d", (int)psa_ret);
+      psa_destroy_key(device_key_id);
+      device_key_id = PSA_KEY_ID_NULL;
       return false;
     }
 

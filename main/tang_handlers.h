@@ -7,7 +7,7 @@
 #include <cJSON.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
-#include <mbedtls/sha256.h>
+#include <psa/crypto.h>
 #include <string.h>
 
 static const char *TAG_HANDLERS = "tang_handlers";
@@ -104,8 +104,9 @@ static esp_err_t handle_adv(httpd_req_t *req) {
            payload_b64);
 
   uint8_t hash[32];
-  mbedtls_sha256((const uint8_t *)signing_input, strlen(signing_input), hash,
-                 0);
+  size_t hash_len;
+  psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t *)signing_input,
+                   strlen(signing_input), hash, sizeof(hash), &hash_len);
   free(signing_input);
 
   // Sign via TEE Secure Storage — private key never leaves the TEE
@@ -281,7 +282,9 @@ static bool compute_exchange_key_thumbprint(int s, char *out_buf,
 
   // RFC 7638 thumbprint always uses SHA-256
   uint8_t hash[32];
-  mbedtls_sha256((const uint8_t *)canonical, (size_t)len, hash, 0);
+  size_t hash_len;
+  psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t *)canonical, (size_t)len,
+                   hash, sizeof(hash), &hash_len);
 
   return b64url_encode_buf(hash, 32, out_buf, out_buf_size);
 }

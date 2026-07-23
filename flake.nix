@@ -4,7 +4,7 @@
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
     nixpkgs-esp-dev = {
-      url = "github:mirrexagon/nixpkgs-esp-dev";
+      url = "github:dvdvgt/nixpkgs-esp-dev/update-v6.0.1";
     };
     nixpkgs.follows = "nixpkgs-esp-dev/nixpkgs";
     idf-extra-components = {
@@ -15,11 +15,9 @@
 
   outputs =
     {
-      self,
       nixpkgs,
       flake-utils,
       nixpkgs-esp-dev,
-      idf-extra-components,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -115,12 +113,20 @@
             export IDF_TOOLS_PATH="$HOME/.espressif"
             export CCACHE_DIR="$HOME/.ccache"
 
-            # Provide real json_generator from Nix (needed for TEE attestation)
-            _JG_NIX="${idf-extra-components}/json_generator"
-            _JG_LOCAL="$PWD/components/json_generator"
-            if [ -L "$_JG_LOCAL" ] || [ ! -e "$_JG_LOCAL/src" ]; then
-              rm -rf "$_JG_LOCAL"
-              ln -sf "$_JG_NIX" "$_JG_LOCAL"
+            # 1. Override read-only esp_tee so the component manager can write to it
+            _ESP_TEE_NIX="$IDF_PATH/components/esp_tee"
+            _ESP_TEE_LOCAL="$PWD/components/esp_tee"
+            if [ ! -d "$_ESP_TEE_LOCAL" ] && [ -d "$_ESP_TEE_NIX" ]; then
+              echo "📦 Creating writable copy of esp_tee component..."
+              cp -r --no-preserve=mode,ownership "$_ESP_TEE_NIX" "$_ESP_TEE_LOCAL"
+              
+              # PATCH: Fix ESP-IDF v6.0.1 esp_tee missing mbedtls dependency
+              _TEE_MAIN_CMAKE="$_ESP_TEE_LOCAL/subproject/main/CMakeLists.txt"
+              if [ -f "$_TEE_MAIN_CMAKE" ]; then
+                echo "🔧 Patching esp_tee dependencies..."
+                sed -i 's/REQUIRES /REQUIRES mbedtls /g' "$_TEE_MAIN_CMAKE"
+                sed -i 's/PRIV_REQUIRES /PRIV_REQUIRES mbedtls /g' "$_TEE_MAIN_CMAKE"
+              fi
             fi
 
             # Create necessary directories
@@ -163,8 +169,8 @@
           CCACHE_DIR = "$HOME/.ccache";
 
           # Disable IDF component manager — the TEE subproject's idf_component.yml
-          # lives in the read-only Nix store. We provide json_generator via Nix instead.
-          IDF_COMPONENT_MANAGER = "0";
+          # lives in the read-only Nix store. We provide cjson via Nix instead.
+          IDF_COMPONENT_MANAGER = "1";
 
           # Prevent Python from creating __pycache__ directories
           PYTHONDONTWRITEBYTECODE = "1";
@@ -175,42 +181,6 @@
           # Set locale to avoid issues
           LANG = "C.UTF-8";
           LC_ALL = "C.UTF-8";
-        };
-
-        devShells.minimal = pkgs.mkShell {
-          name = "esp32-tang-minimal";
-
-          buildInputs = with pkgs; [
-            esp-idf-full
-            picocom
-          ];
-
-          shellHook = ''
-            echo "⚡ ESP32 Tang Server (Minimal Environment)"
-            echo "========================================"
-            echo "Ready for ESP32 development!"
-            echo
-
-            export IDF_TOOLS_PATH="$HOME/.espressif"
-            export CCACHE_DIR="$HOME/.ccache"
-            mkdir -p "$CCACHE_DIR"
-
-            # Provide real json_generator from Nix (needed for TEE attestation)
-            _JG_NIX="${idf-extra-components}/json_generator"
-            _JG_LOCAL="$PWD/components/json_generator"
-            if [ -L "$_JG_LOCAL" ] || [ ! -e "$_JG_LOCAL/src" ]; then
-              rm -rf "$_JG_LOCAL"
-              ln -sf "$_JG_NIX" "$_JG_LOCAL"
-            fi
-          '';
-
-          # Disable IDF component manager for Nix compatibility
-          IDF_COMPONENT_MANAGER = "0";
-
-          extraDevPaths = [
-            "/dev/ttyUSB*"
-            "/dev/ttyACM*"
-          ];
         };
       }
     );
