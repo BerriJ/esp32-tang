@@ -32,7 +32,7 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
         .subtitle { text-align: center; color: #666; font-size: 14px; margin-bottom: 30px; }
         .form-group { margin-bottom: 20px; }
         label { display: block; margin-bottom: 6px; font-weight: 600; color: #333; font-size: 14px; }
-        input[type="text"], input[type="password"] {
+        input[type="text"], input[type="password"], select {
             width: 100%;
             padding: 12px 15px;
             border: 2px solid #e0e0e0;
@@ -41,7 +41,7 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
             transition: border-color 0.3s;
             background: #fafafa;
         }
-        input:focus { outline: none; border-color: #5a7d5a; background: white; }
+        input:focus, select:focus { outline: none; border-color: #5a7d5a; background: white; }
         .hint { font-size: 12px; color: #888; margin-top: 4px; }
         button {
             width: 100%;
@@ -90,6 +90,15 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
                        title="Letters, numbers and hyphens only">
                 <div class="hint">Used for network discovery (e.g. https://<span id="hostname-preview">esp-tang</span>.local)</div>
             </div>
+            <div class="form-group">
+                <label for="band_mode">WiFi Band</label>
+                <select id="band_mode">
+                    <option value="auto" selected>Auto (2.4 GHz + 5 GHz)</option>
+                    <option value="2g">2.4 GHz only</option>
+                    <option value="5g">5 GHz only</option>
+                </select>
+                <div class="hint">Restrict to one band if your router or environment requires it</div>
+            </div>
             <button type="submit" id="btn">Save &amp; Connect</button>
         </form>
         <div id="status" class="status"></div>
@@ -109,6 +118,7 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
         var ssid = document.getElementById('ssid').value.trim();
         var password = document.getElementById('password').value;
         var hostname = document.getElementById('hostname').value.trim() || 'esp-tang';
+        var band_mode = document.getElementById('band_mode').value;
         if (!ssid) {
             st.textContent = 'SSID is required';
             st.className = 'status error';
@@ -120,7 +130,7 @@ const char WIFI_PROV_PAGE[] = R"rawliteral(
             var resp = await fetch('/api/configure', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ssid: ssid, password: password, hostname: hostname})
+                body: JSON.stringify({ssid: ssid, password: password, hostname: hostname, band_mode: band_mode})
             });
             var data = await resp.json();
             if (data.success) {

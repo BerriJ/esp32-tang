@@ -150,7 +150,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
 // --- WiFi STA Setup (normal mode) ---
 void setup_wifi_sta(const char *ssid, const char *password,
-                    const char *hostname) {
+                    const char *hostname, wifi_band_mode_t band_mode) {
   wifi_event_group = xEventGroupCreate();
 
   ESP_ERROR_CHECK(esp_netif_init());
@@ -174,10 +174,14 @@ void setup_wifi_sta(const char *ssid, const char *password,
           sizeof(wifi_config.sta.password));
   wifi_config.sta.threshold.authmode =
       strlen(password) > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+  wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+  wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
+  // esp_wifi_set_band_mode() requires WiFi to already be started (ESP_ERR_WIFI_NOT_STARTED otherwise)
+  ESP_ERROR_CHECK(esp_wifi_set_band_mode(band_mode));
 
   ESP_LOGI(TAG, "Connecting to SSID: %s (hostname: %s)", ssid, hostname);
 }
@@ -275,6 +279,11 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
 
   cJSON_AddNumberToObject(root, "uptime", uptime_secs);
   cJSON_AddNumberToObject(root, "unlocked", unlocked);
+
+  wifi_ap_record_t ap_info;
+  if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+    cJSON_AddNumberToObject(root, "wifi_rssi", ap_info.rssi);
+  }
 
   cJSON *heap_obj = cJSON_AddObjectToObject(root, "heap");
 
@@ -457,10 +466,11 @@ void setup() {
   char wifi_ssid[33] = {};
   char wifi_password[65] = {};
   char hostname[64] = {};
+  wifi_band_mode_t wifi_band_mode = WIFI_BAND_MODE_AUTO;
 
   bool has_nvs_wifi = read_wifi_config_from_nvs(
       wifi_ssid, sizeof(wifi_ssid), wifi_password, sizeof(wifi_password),
-      hostname, sizeof(hostname));
+      hostname, sizeof(hostname), &wifi_band_mode);
 
   // Fall back to Kconfig values if NVS has no WiFi config
   if (!has_nvs_wifi && strlen(CONFIG_WIFI_SSID) > 0) {
@@ -476,7 +486,7 @@ void setup() {
 
   if (strlen(wifi_ssid) > 0) {
     // Normal mode — connect to WiFi and start servers
-    setup_wifi_sta(wifi_ssid, wifi_password, device_hostname);
+    setup_wifi_sta(wifi_ssid, wifi_password, device_hostname, wifi_band_mode);
 
     // Wait for WiFi to connect before starting servers — avoids TLS
     // handshake failures from clients connecting before the network is ready.

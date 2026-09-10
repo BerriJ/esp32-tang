@@ -5,6 +5,7 @@
 #include <cJSON.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
+#include <esp_wifi.h>
 #include <nvs_flash.h>
 #include <string.h>
 
@@ -14,13 +15,16 @@ static const char *TAG_WIFI_PROV = "wifi_prov";
 #define NVS_KEY_SSID "ssid"
 #define NVS_KEY_PASSWORD "password"
 #define NVS_KEY_HOSTNAME "hostname"
+#define NVS_KEY_BAND_MODE "band_mode"
 #define DEFAULT_HOSTNAME "esp-tang"
+#define DEFAULT_BAND_MODE WIFI_BAND_MODE_AUTO
 
 // --- NVS Read/Write ---
 
 static bool read_wifi_config_from_nvs(char *ssid, size_t ssid_len,
                                       char *password, size_t pass_len,
-                                      char *hostname, size_t host_len) {
+                                      char *hostname, size_t host_len,
+                                      wifi_band_mode_t *band_mode) {
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &nvs);
   if (err != ESP_OK) {
@@ -44,12 +48,19 @@ static bool read_wifi_config_from_nvs(char *ssid, size_t ssid_len,
     nvs_get_str(nvs, NVS_KEY_HOSTNAME, hostname, &len); // OK if missing
   }
 
+  if (band_mode) {
+    uint8_t stored = DEFAULT_BAND_MODE;
+    nvs_get_u8(nvs, NVS_KEY_BAND_MODE, &stored); // OK if missing, keeps default
+    *band_mode = (wifi_band_mode_t)stored;
+  }
+
   nvs_close(nvs);
   return true;
 }
 
 static bool save_wifi_config_to_nvs(const char *ssid, const char *password,
-                                    const char *hostname) {
+                                    const char *hostname,
+                                    wifi_band_mode_t band_mode) {
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
@@ -61,6 +72,7 @@ static bool save_wifi_config_to_nvs(const char *ssid, const char *password,
   nvs_set_str(nvs, NVS_KEY_PASSWORD, password ? password : "");
   nvs_set_str(nvs, NVS_KEY_HOSTNAME,
               (hostname && strlen(hostname) > 0) ? hostname : DEFAULT_HOSTNAME);
+  nvs_set_u8(nvs, NVS_KEY_BAND_MODE, (uint8_t)band_mode);
   err = nvs_commit(nvs);
   nvs_close(nvs);
 
@@ -79,8 +91,8 @@ static esp_err_t handle_prov_root(httpd_req_t *req) {
   httpd_resp_set_hdr(
       req, "Content-Security-Policy",
       "default-src 'none'; "
-      "script-src 'sha256-jbLLDtHw46yGbi4u8zQRiT3R2wuaMBZ+OIyJfdOtXRA='; "
-      "style-src 'sha256-EjixCmbU5VI4SexUFBLu5k4IDdN+JRiJ/L70jSmJPfw='; "
+      "script-src 'sha256-QI6bYwGgk/ohDSl0magOmTcGjNvc805zPp4hLDKBf0U='; "
+      "style-src 'sha256-k8Mu3YUpQjsxyGR53KdPRNl2g8ApPsXnABAjJxekLlo='; "
       "img-src data:; "
       "connect-src 'self'; "
       "form-action 'none'; "
@@ -107,6 +119,7 @@ static esp_err_t handle_prov_configure(httpd_req_t *req) {
   cJSON *j_ssid = cJSON_GetObjectItem(root, "ssid");
   cJSON *j_password = cJSON_GetObjectItem(root, "password");
   cJSON *j_hostname = cJSON_GetObjectItem(root, "hostname");
+  cJSON *j_band_mode = cJSON_GetObjectItem(root, "band_mode");
 
   if (!cJSON_IsString(j_ssid) || strlen(j_ssid->valuestring) == 0) {
     cJSON_Delete(root);
@@ -161,7 +174,26 @@ static esp_err_t handle_prov_configure(httpd_req_t *req) {
     }
   }
 
-  bool saved = save_wifi_config_to_nvs(ssid, password, hostname);
+  // Validate WiFi band mode (defaults to auto if omitted)
+  wifi_band_mode_t band_mode = DEFAULT_BAND_MODE;
+  if (cJSON_IsString(j_band_mode)) {
+    const char *bm = j_band_mode->valuestring;
+    if (strcmp(bm, "auto") == 0) {
+      band_mode = WIFI_BAND_MODE_AUTO;
+    } else if (strcmp(bm, "2g") == 0) {
+      band_mode = WIFI_BAND_MODE_2G_ONLY;
+    } else if (strcmp(bm, "5g") == 0) {
+      band_mode = WIFI_BAND_MODE_5G_ONLY;
+    } else {
+      cJSON_Delete(root);
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(
+          req, "{\"success\":false,\"message\":\"Invalid band mode\"}");
+      return ESP_OK;
+    }
+  }
+
+  bool saved = save_wifi_config_to_nvs(ssid, password, hostname, band_mode);
   cJSON_Delete(root);
 
   httpd_resp_set_type(req, "application/json");
