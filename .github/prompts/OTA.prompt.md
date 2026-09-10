@@ -14,14 +14,14 @@ Add over-the-air firmware update capability. Switch from 2MB to 4MB flash config
 
    | Name           | Type | SubType  | Offset   | Size  |
    | -------------- | ---- | -------- | -------- | ----- |
-   | tee_0          | app  | tee_0    | 0x20000  | 192K  |
-   | secure_storage | data | nvs      | 0x50000  | 64K   |
-   | otadata        | data | ota      | 0x60000  | 8K    |
-   | ota_0          | app  | ota_0    | 0x70000  | 1216K |
-   | ota_1          | app  | ota_1    | 0x1A0000 | 1216K |
-   | nvs            | data | nvs      | 0x2D0000 | 24K   |
-   | phy_init       | data | phy      | 0x2D6000 | 4K    |
-   | nvs_keys       | data | nvs_keys | 0x2D7000 | 4K    |
+   | tee_0          | app  | tee_0    | 0x20000  | 256K  |
+   | secure_storage | data | nvs      | 0x60000  | 64K   |
+   | otadata        | data | ota      | 0x70000  | 8K    |
+   | ota_0          | app  | ota_0    | 0x80000  | 1216K |
+   | ota_1          | app  | ota_1    | 0x1B0000 | 1216K |
+   | nvs            | data | nvs      | 0x2E0000 | 24K   |
+   | phy_init       | data | phy      | 0x2E6000 | 4K    |
+   | nvs_keys       | data | nvs_keys | 0x2E7000 | 4K    |
 
 ### Phase 2: OTA Handler Implementation
 
@@ -43,7 +43,7 @@ Add over-the-air firmware update capability. Switch from 2MB to 4MB flash config
 
 7. **Update flash commands** (*depends on 1-2*)
    - `--flash_size 4MB` in `Makefile`, `PROVISIONING.md`
-   - Initial flash goes to `0x70000` (ota_0) instead of `0x60000` (factory)
+   - Initial flash goes to `0x80000` (ota_0) instead of `0x70000` (factory)
    - Update flash layout table in PROVISIONING.md
 
 ### Phase 4: Rollback Support

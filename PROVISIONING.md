@@ -12,7 +12,6 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 
 - `esptool.py`, `espefuse.py`, `espsecure.py` (included in ESP-IDF)
 - Signing key: `secure_boot_signing_key.pem` (ECDSA P-256) (`espsecure.py generate_signing_key --version 2 --scheme ecdsa256 secure_boot_signing_key.pem`)
-- Built firmware (`idf.py build` completed successfully)
 
 ## eFuse Key Block Allocation
 
@@ -29,14 +28,14 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 
 | Region          | Offset   | Size            | Contents                 |
 | --------------- | -------- | --------------- | ------------------------ |
-| Bootloader      | 0x00000  | ~48 KB (signed) | 2nd stage bootloader     |
+| Bootloader      | 0x02000  | ~48 KB (signed) | 2nd stage bootloader     |
 | Partition table | 0x10000  | ~3 KB           | Partition table          |
-| tee_0           | 0x20000  | 192 KB          | TEE application          |
-| secure_storage  | 0x50000  | 64 KB           | TEE NVS (secure storage) |
-| factory         | 0x60000  | 1216 KB         | Main application         |
-| nvs             | 0x190000 | 24 KB           | Application NVS          |
-| phy_init        | 0x196000 | 4 KB            | PHY calibration data     |
-| nvs_keys        | 0x197000 | 4 KB            | NVS encryption keys      |
+| tee_0           | 0x20000  | 256 KB          | TEE application          |
+| secure_storage  | 0x60000  | 64 KB           | TEE NVS (secure storage) |
+| factory         | 0x70000  | 1216 KB         | Main application         |
+| nvs             | 0x1A0000 | 24 KB           | Application NVS          |
+| phy_init        | 0x1A6000 | 4 KB            | PHY calibration data     |
+| nvs_keys        | 0x1A7000 | 4 KB            | NVS encryption keys      |
 
 ## Production Provisioning Steps
 
@@ -50,7 +49,7 @@ openssl req -new -x509 -key ./main/https_server.key -out ./main/https_server.crt
   -addext "subjectAltName=DNS:esp-tang,DNS:esp-tang.local"
 ```
 
-Place both files in the project root (next to `CMakeLists.txt`). They are embedded into the firmware via `EMBED_TXTFILES` in `main/CMakeLists.txt` and protected at rest by flash encryption.
+Place both files in the [main](./main/) folder (next to `CMakeLists.txt`). They are embedded into the firmware via `EMBED_TXTFILES` in `main/CMakeLists.txt` and protected at rest by flash encryption.
 
 ### 2. Build firmware
 
@@ -73,18 +72,22 @@ With `CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS=y`, this can be done before or af
 
 > **WARNING: This is irreversible.**
 
-```bash
-espefuse.py --port /dev/ttyACM1 \
-  burn_key BLOCK_KEY2 tee_sec_stg_hmac.bin HMAC_UP
+Find the port of your device (e.g. `/dev/ttyACM0`) with `sudo dmesg -w` or `ls /dev/ttyACM*`. Then run:
 
-espefuse.py --port /dev/ttyACM1 \
+```bash
+espefuse.py --port /dev/ttyACM0 \
+  burn_key BLOCK_KEY2 tee_sec_stg_hmac.bin HMAC_UP
+```
+
+```
+espefuse.py --port /dev/ttyACM0 \
   burn_key BLOCK_KEY3 tee_pbkdf2_hmac.bin HMAC_UP
 ```
 
 ### 5. Verify eFuse state
 
 ```bash
-espefuse.py --port /dev/ttyACM1 summary | grep KEY_PURPOSE
+espefuse.py --port /dev/ttyACM0 summary | grep KEY_PURPOSE
 ```
 
 Expected output should show blocks 2 and 3 as `HMAC_UP`.
@@ -92,13 +95,13 @@ Expected output should show blocks 2 and 3 as `HMAC_UP`.
 ### 6. Flash all images at once
 
 ```bash
-esptool.py --chip esp32c6 -p /dev/ttyACM1 --baud 460800 \
-  --before=default_reset --after=no_reset --no-stub \
-  write_flash --flash_mode dio --flash_freq 80m --flash_size 2MB \
-  0x0 build/bootloader/bootloader.bin \
+esptool.py --chip esp32c5 -p /dev/ttyACM0 --baud 460800 \
+  --before=default-reset --after=no-reset --no-stub \
+  write-flash --flash-mode dio --flash-freq 80m --flash-size 2MB \
+  0x2000 build/bootloader/bootloader.bin \
   0x10000 build/partition_table/partition-table.bin \
   0x20000 build/esp_tee/esp_tee.bin \
-  0x60000 build/esp32-tang.bin
+  0x70000 build/esp32-tang.bin
 ```
 
 ### 7. First boot
@@ -114,7 +117,7 @@ On first boot, the bootloader will automatically:
 ### 8. Monitor
 
 ```bash
-idf.py -p /dev/ttyACM1 monitor
+idf.py -p /dev/ttyACM0 monitor
 ```
 
 > A soft reset may cause a race condition witht the ESP32-C6 crypto hardware causing a bootloop. In that case press the reset button to hard-reset and it should boot normally.
@@ -134,13 +137,13 @@ Verify:
 After all eFuse keys are provisioned and read-protected, permanently lock `RD_DIS` to prevent any further read-protection changes:
 
 ```bash
-espefuse.py --port /dev/ttyACM1 write_protect_efuse RD_DIS
+espefuse.py --port /dev/ttyACM0 write_protect_efuse RD_DIS
 ```
 
 This burns `WR_DIS_RD_DIS`, giving the same final security posture as the default (without `ALLOW_EFUSE_RD_DIS`). Verify with:
 
 ```bash
-espefuse.py --port /dev/ttyACM1 summary 2>&1 | grep RD_DIS
+espefuse.py --port /dev/ttyACM0 summary 2>&1 | grep RD_DIS
 ```
 
 > **WARNING: This is irreversible.** Only do this after confirming all HMAC key blocks are correctly provisioned and read-protected.
@@ -152,19 +155,19 @@ Since flash encryption is active (`SPI_BOOT_CRYPT_CNT` has odd bits set), you **
 The simplest option is `idf.py encrypted-flash`, which flashes everything except the bootloader with encryption:
 
 ```bash
-idf.py -p /dev/ttyACM1 encrypted-flash
+idf.py -p /dev/ttyACM0 encrypted-flash
 ```
 
 > **Note:** `idf.py encrypted-flash` (like `idf.py flash`) skips the bootloader when secure boot is enabled. To flash the bootloader as well, use esptool directly:
 
 ```bash
-esptool.py --chip esp32c6 -p /dev/ttyACM1 --baud 460800 \
+esptool.py --chip esp32c5 -p /dev/ttyACM0 --baud 460800 \
   --before=default_reset --after=no_reset --no-stub \
   write_flash --force --encrypt --flash_mode dio --flash_freq 80m --flash_size 2MB \
-  0x0 build/bootloader/bootloader.bin \
+  0x2000 build/bootloader/bootloader.bin \
   0x10000 build/partition_table/partition-table.bin \
   0x20000 build/esp_tee/esp_tee.bin \
-  0x60000 build/esp32-tang.bin
+  0x70000 build/esp32-tang.bin
 ```
 
 > **Note:** Without `--encrypt`, plaintext data is written to flash but the hardware decryption layer is active, causing reads to return garbage (e.g., partition table magic becomes 0x9115 instead of 0x50AA).

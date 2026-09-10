@@ -1,5 +1,5 @@
 # Target Configuration
-CONFIG_IDF_TARGET="esp32c6"
+CONFIG_IDF_TARGET="esp32c5"
 
 # TEE (Trusted Execution Environment)
 CONFIG_SECURE_ENABLE_TEE=y

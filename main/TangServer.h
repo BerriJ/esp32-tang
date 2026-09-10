@@ -50,6 +50,9 @@ static void led_task(void *arg) {
       .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
       .intr_type = GPIO_INTR_DISABLE,
+#if SOC_GPIO_SUPPORT_PIN_HYS_FILTER
+      .hys_ctrl_mode = GPIO_HYS_SOFT_DISABLE,
+#endif
   };
   gpio_config(&io_conf);
 

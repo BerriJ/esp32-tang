@@ -17,5 +17,5 @@ direct_dependencies:
 - espressif/cjson
 - idf
 manifest_hash: 2a784d5bbf93426375b7a29827ccb3e8c338e377c9f6ef891397b9c9c339fb4a
-target: esp32c6
+target: esp32c5
 version: 3.0.0
