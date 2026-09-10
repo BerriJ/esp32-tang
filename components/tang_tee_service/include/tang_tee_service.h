@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "esp_tee.h"
 #include "secure_service_num.h"
+#include "soc/soc_caps.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -15,6 +16,16 @@ extern "C" {
 #define TEE_EC_PUBLIC_KEY_SIZE 64
 #define TEE_EC_COORDINATE_SIZE 32
 #define TEE_EC_SIGNATURE_SIZE 64
+
+/* Must match MAX_ECDSA_SUPPORTED_KEY_LEN in esp_tee_sec_storage.h exactly —
+ * on chips with SECP384R1 support (e.g. esp32c5) the TEE pads pub_x/pub_y to
+ * 48 bytes each, so a hardcoded 32 here silently misaligns the Y coordinate
+ * and overflows this struct's storage when copied out of the TEE. */
+#if SOC_ECDSA_SUPPORT_CURVE_P384
+#define TEE_SEC_STG_MAX_ECDSA_KEY_LEN 48
+#else
+#define TEE_SEC_STG_MAX_ECDSA_KEY_LEN 32
+#endif
 
 /* eFuse status codes returned by tang_tee_efuse_status() */
 #define TEE_EFUSE_STATUS_FREE 0
@@ -39,8 +50,8 @@ typedef struct {
 } tee_sec_stg_key_cfg_t;
 
 typedef struct {
-  uint8_t pub_x[TEE_EC_COORDINATE_SIZE];
-  uint8_t pub_y[TEE_EC_COORDINATE_SIZE];
+  uint8_t pub_x[TEE_SEC_STG_MAX_ECDSA_KEY_LEN];
+  uint8_t pub_y[TEE_SEC_STG_MAX_ECDSA_KEY_LEN];
 } __attribute__((__packed__)) tee_sec_stg_ecdsa_pubkey_t;
 
 typedef struct {

@@ -1,4 +1,4 @@
-# Plan: OTA Firmware Updates for ESP32-C6 Tang Server
+# Plan: OTA Firmware Updates for ESP32-C5 Tang Server
 
 Add over-the-air firmware update capability. Switch from 2MB to 4MB flash config, replace the single `factory` partition with dual OTA slots (`ota_0`/`ota_1`), and add an authenticated `/api/ota` HTTP endpoint that accepts signed firmware binaries. Secure Boot V2 validates every OTA image automatically — no custom signature verification needed.
 

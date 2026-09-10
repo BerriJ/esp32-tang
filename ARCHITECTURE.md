@@ -7,12 +7,12 @@ boundaries between the TEE and REE are enforced.
 ## What Is This?
 
 An embedded [Tang](https://github.com/latchset/tang) server running on an
-**ESP32-C6** microcontroller. Tang is a network-based key escrow protocol that
+**ESP32-C5** microcontroller. Tang is a network-based key escrow protocol that
 allows clients to encrypt secrets and later recover them by contacting the Tang
 server, which performs an ECDH exchange to release the decryption material.
 
 This implementation targets **ESP-IDF** with the **ESP-TEE** (Trusted Execution
-Environment) on the C6's RISC-V core. All private key material is confined to
+Environment) on the C5's RISC-V core. All private key material is confined to
 TEE (M-mode) memory and is never exposed to the application (REE / U-mode).
 
 ---

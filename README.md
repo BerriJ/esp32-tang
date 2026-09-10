@@ -1,13 +1,13 @@
-# ESP32-C6 Tang Server
+# ESP32-C5 Tang Server
 
-A hardware-secured [Tang](https://github.com/latchset/tang) server running on an **ESP32-C6** microcontroller with ESP-TEE (Trusted Execution Environment).
+A hardware-secured [Tang](https://github.com/latchset/tang) server running on an **ESP32-C5** microcontroller with ESP-TEE (Trusted Execution Environment).
 
 Tang is a network-based key escrow protocol — clients encrypt secrets to the server's public key and later recover them via an ECDH exchange. This implementation confines all private key material to the TEE; the application (REE) never sees secret keys.
 
 ## Features
 
 - **Full Tang protocol** — `/adv` (JWS-signed key advertisement) and `/rec` (ECDH recovery), compatible with [clevis](https://github.com/latchset/clevis)
-- **Hardware-isolated keys** — signing and exchange private keys live exclusively in the ESP32-C6 TEE (M-mode). Key derivation uses the hardware HMAC peripheral tied to a one-time-programmable eFuse key
+- **Hardware-isolated keys** — signing and exchange private keys live exclusively in the ESP32-C5 TEE (M-mode). Key derivation uses the hardware HMAC peripheral tied to a one-time-programmable eFuse key
 - **Zero-knowledge unlock** — password never leaves the browser; only a PBKDF2 derivative is transmitted inside an ECIES-encrypted tunnel
 - **Key rotation** — exchange keys are managed in a generational ring buffer with password-verified rotation
 - **Password change** — re-derives the entire key hierarchy with forward secrecy (fresh KDF salt per change)
@@ -21,7 +21,7 @@ Tang is a network-based key escrow protocol — clients encrypt secrets to the s
 ### Prerequisites
 
 - ESP-IDF v5.5+ with ESP-TEE support
-- ESP32-C6 development board
+- ESP32-C5 development board
 - Nix (optional, for reproducible builds via `flake.nix`)
 
 ### Build & Flash

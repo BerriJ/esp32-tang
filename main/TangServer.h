@@ -39,7 +39,7 @@ static EventGroupHandle_t wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
 
 // --- LED State ---
-#define LED_GPIO GPIO_NUM_15
+#define LED_GPIO GPIO_NUM_27
 static bool wifi_connected = false;
 volatile bool led_recovery_blink = false;
 

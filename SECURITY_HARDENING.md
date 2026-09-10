@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medium, and 6 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated in release mode**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled** (including SoftAP provisioning), **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining open item is medium-priority: V16 (CSRF on /reboot — accepted). All low-severity items have been resolved. OTA has been declined — physical access is always available, and serial flashing via Secure Boot is sufficient.
+Security analysis of the ESP32-C5 Tang server reveals 4 critical, 7 high, 8 medium, and 6 low-severity vulnerabilities. **Flash Encryption and Secure Boot V2 have been activated**, **JTAG is disabled automatically** when Secure Boot is enabled, **TEE Secure Storage has been activated in release mode**, **PBKDF2 iterations have been increased to 600,000**, **HTTPS has been enabled** (including SoftAP provisioning), **release build optimization has been configured**, and **WiFi reconnection backoff has been implemented**. All critical and high-severity vulnerabilities have been addressed. The remaining open item is medium-priority: V16 (CSRF on /reboot — accepted). All low-severity items have been resolved. OTA has been declined — physical access is always available, and serial flashing via Secure Boot is sufficient.
 
 ---
 
@@ -342,7 +342,6 @@ Security analysis of the ESP32-C6 Tang server reveals 4 critical, 7 high, 8 medi
 
 ## Decisions
 
-- **ESP32-C5 vs C6**: Staying on C6 is recommended. The C5 has comparable security features and switching would add migration effort with minimal security gain.
 - **ECIES tunnel vs TLS**: With HTTPS enabled (Phase 2), the ECIES tunnel becomes defense-in-depth rather than the sole transport protection. Both can coexist; the ECIES tunnel still adds value (end-to-end encryption past any TLS-terminating proxy).
 - **PBKDF2 iteration increase is breaking**: Existing passwords will produce different hashes. A migration path (try 600k first, fall back to 10k, then force re-enrollment) could ease transition.
 - **OTA vs serial flashing**: OTA declined — physical access is always available, Secure Boot V2 ensures only signed firmware can be flashed via serial, and OTA would halve app partition space while adding attack surface.

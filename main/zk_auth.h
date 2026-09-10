@@ -17,7 +17,7 @@
 #include <string.h>
 
 // Zero-Knowledge Authentication Module
-// Implements Client-Side KDF + ECIES Tunnel for ESP32-C6
+// Implements Client-Side KDF + ECIES Tunnel for ESP32-C5
 //
 // After ECIES decryption the PBKDF2 hash is passed to the TEE which
 // derives the master key via the hardware HMAC peripheral (eFuse KEY5).

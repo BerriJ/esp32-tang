@@ -1,4 +1,4 @@
-# ESP32-C6 Tang Server — Provisioning Guide
+# ESP32-C5 Tang Server — Provisioning Guide
 
 ## Overview
 
@@ -120,7 +120,7 @@ On first boot, the bootloader will automatically:
 idf.py -p /dev/ttyACM0 monitor
 ```
 
-> A soft reset may cause a race condition witht the ESP32-C6 crypto hardware causing a bootloop. In that case press the reset button to hard-reset and it should boot normally.
+> A soft reset may cause a race condition with the ESP32-C5 crypto hardware causing a bootloop. In that case press the reset button to hard-reset and it should boot normally.
 
 Verify:
 - `ECDSA secure boot verification succeeded`
@@ -161,7 +161,7 @@ idf.py -p /dev/ttyACM0 encrypted-flash
 > **Note:** `idf.py encrypted-flash` (like `idf.py flash`) skips the bootloader when secure boot is enabled. To flash the bootloader as well, use esptool directly:
 
 ```bash
-esptool.py --chip esp32c5 -p /dev/ttyACM0 --baud 460800 \
+esptool.py --chip esp32c5 -p /dev/ttyACM1 --baud 460800 \
   --before=default_reset --after=no_reset --no-stub \
   write_flash --force --encrypt --flash_mode dio --flash_freq 80m --flash_size 2MB \
   0x2000 build/bootloader/bootloader.bin \
