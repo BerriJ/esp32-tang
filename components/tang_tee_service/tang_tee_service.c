@@ -675,17 +675,16 @@ esp_err_t _ss_tang_tee_efuse_status(uint32_t *status_out) {
  * SS 209: Provision eFuse KEY4 with a random ECDSA key.
  */
 esp_err_t _ss_tang_tee_provision_efuse_ecdsa(void) {
-  esp_efuse_purpose_t purpose;
-  esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_KEY_PURPOSE_4, &purpose,
-                                            sizeof(purpose) * 8);
-  if (err != ESP_OK)
-    return err;
+  esp_err_t err;
 
-  if (purpose == ESP_EFUSE_KEY_PURPOSE_ECDSA_KEY)
-    return ESP_OK; /* Already provisioned */
-
-  if (purpose != ESP_EFUSE_KEY_PURPOSE_USER)
-    return ESP_ERR_INVALID_STATE; /* Wrong purpose, can't provision */
+  /* Check if KEY4 is already used */
+  esp_efuse_purpose_t purpose = esp_efuse_get_key_purpose(EFUSE_BLK_KEY4);
+  if (purpose != ESP_EFUSE_KEY_PURPOSE_USER) {
+    if (purpose == ESP_EFUSE_KEY_PURPOSE_ECDSA_KEY) {
+       return ESP_OK; /* Already provisioned */
+    }
+    return ESP_ERR_INVALID_STATE;
+  }
 
   /* Generate random 256-bit key and burn to eFuse */
   uint8_t ecdsa_key[32];
@@ -710,16 +709,16 @@ esp_err_t _ss_tang_tee_provision_efuse_ecdsa(void) {
 
 /**
  * SS 210: Get eFuse KEY4 status.
+ * Outputs:
+ *  0 = Free
+ *  1 = Provisioned for ECDSA
+ *  2 = Wrong purpose
  */
 esp_err_t _ss_tang_tee_efuse_ecdsa_status(uint32_t *status_out) {
   if (!status_out)
     return ESP_ERR_INVALID_ARG;
 
-  esp_efuse_purpose_t purpose;
-  esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_KEY_PURPOSE_4, &purpose,
-                                            sizeof(purpose) * 8);
-  if (err != ESP_OK)
-    return err;
+  esp_efuse_purpose_t purpose = esp_efuse_get_key_purpose(EFUSE_BLK_KEY4);
 
   if (purpose == ESP_EFUSE_KEY_PURPOSE_ECDSA_KEY)
     *status_out = 1; /* TEE_EFUSE_STATUS_PROVISIONED */
