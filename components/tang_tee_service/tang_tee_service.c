@@ -5,21 +5,21 @@
  * Private keys never leave the TEE's hardware-protected memory.
  */
 #include "esp_cpu.h"
-#include "esp_err.h"
 #include "esp_efuse.h"
 #include "esp_efuse_table.h"
+#include "esp_err.h"
 #include "esp_hmac.h"
 #include "esp_random.h"
 #include "esp_tee.h"
-#include "nvs_flash.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 #include "secure_service_num.h"
 
-#include <mbedtls/platform_util.h>
-#include <mbedtls/ecp.h>
-#include <mbedtls/bignum.h>
-#include <psa/crypto.h>
 #include <inttypes.h>
+#include <mbedtls/bignum.h>
+#include <mbedtls/ecp.h>
+#include <mbedtls/platform_util.h>
+#include <psa/crypto.h>
 #include <string.h>
 
 /* P-256 key sizes */
@@ -58,8 +58,8 @@ static esp_err_t ensure_nvs(void) {
   if (err != ESP_OK)
     return err;
 
-  err = nvs_open_from_partition("secure_storage", "tang_keys",
-                                NVS_READWRITE, &tang_nvs);
+  err = nvs_open_from_partition("secure_storage", "tang_keys", NVS_READWRITE,
+                                &tang_nvs);
   if (err != ESP_OK)
     return err;
 
@@ -116,9 +116,8 @@ static int tee_rng(void *ctx, unsigned char *buf, size_t len) {
  * HMAC(K, m) = H((K' xor opad) || H((K' xor ipad) || m))
  * where K' = K padded to block size (64 bytes for SHA-256).
  */
-static int hmac_sha256(const uint8_t *key, size_t key_len,
-                       const uint8_t *msg, size_t msg_len,
-                       uint8_t out[32]) {
+static int hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *msg,
+                       size_t msg_len, uint8_t out[32]) {
   psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
   psa_set_key_type(&attr, PSA_KEY_TYPE_HMAC);
   psa_set_key_algorithm(&attr, PSA_ALG_HMAC(PSA_ALG_SHA_256));
@@ -130,8 +129,8 @@ static int hmac_sha256(const uint8_t *key, size_t key_len,
     return -1;
 
   size_t mac_len;
-  status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256),
-                           msg, msg_len, out, 32, &mac_len);
+  status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256), msg, msg_len,
+                           out, 32, &mac_len);
   psa_destroy_key(key_id);
   return (status == PSA_SUCCESS) ? 0 : -1;
 }
@@ -420,8 +419,8 @@ esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
   mbedtls_platform_zeroize(priv, sizeof(priv));
 
   if (ret == 0)
-    ret =
-        mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), client_pub, EC_COORD_SIZE);
+    ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(X), client_pub,
+                                  EC_COORD_SIZE);
   if (ret == 0)
     ret = mbedtls_mpi_read_binary(&Q.MBEDTLS_PRIVATE(Y),
                                   client_pub + EC_COORD_SIZE, EC_COORD_SIZE);
@@ -435,9 +434,8 @@ esp_err_t _ss_tang_tee_ecdh(const uint8_t *client_pub, uint32_t generation,
     ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(X), shared_point_out,
                                    EC_COORD_SIZE);
   if (ret == 0)
-    ret = mbedtls_mpi_write_binary(&Q.MBEDTLS_PRIVATE(Y),
-                                   shared_point_out + EC_COORD_SIZE,
-                                   EC_COORD_SIZE);
+    ret = mbedtls_mpi_write_binary(
+        &Q.MBEDTLS_PRIVATE(Y), shared_point_out + EC_COORD_SIZE, EC_COORD_SIZE);
 
   mbedtls_ecp_group_free(&grp);
   mbedtls_ecp_point_free(&Q);
@@ -519,8 +517,7 @@ esp_err_t _ss_tang_tee_lock(void) {
  */
 esp_err_t _ss_tang_tee_change_password(const uint8_t *old_keying,
                                        const uint8_t *new_keying,
-                                       uint32_t nkeys,
-                                       uint8_t *pub_keys_out) {
+                                       uint32_t nkeys, uint8_t *pub_keys_out) {
   if (!activated)
     return ESP_ERR_INVALID_STATE;
   if (!old_keying || !new_keying || !pub_keys_out || nkeys == 0)
@@ -665,6 +662,66 @@ esp_err_t _ss_tang_tee_efuse_status(uint32_t *status_out) {
     return err;
 
   if (purpose == ESP_EFUSE_KEY_PURPOSE_HMAC_UP)
+    *status_out = 1; /* TEE_EFUSE_STATUS_PROVISIONED */
+  else if (purpose == ESP_EFUSE_KEY_PURPOSE_USER)
+    *status_out = 0; /* TEE_EFUSE_STATUS_FREE */
+  else
+    *status_out = 2; /* TEE_EFUSE_STATUS_WRONG_PURPOSE */
+
+  return ESP_OK;
+}
+
+/**
+ * SS 209: Provision eFuse KEY4 with a random ECDSA key.
+ */
+esp_err_t _ss_tang_tee_provision_efuse_ecdsa(void) {
+  esp_efuse_purpose_t purpose;
+  esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_KEY_PURPOSE_4, &purpose,
+                                            sizeof(purpose) * 8);
+  if (err != ESP_OK)
+    return err;
+
+  if (purpose == ESP_EFUSE_KEY_PURPOSE_ECDSA_KEY)
+    return ESP_OK; /* Already provisioned */
+
+  if (purpose != ESP_EFUSE_KEY_PURPOSE_USER)
+    return ESP_ERR_INVALID_STATE; /* Wrong purpose, can't provision */
+
+  /* Generate random 256-bit key and burn to eFuse */
+  uint8_t ecdsa_key[32];
+  esp_fill_random(ecdsa_key, sizeof(ecdsa_key));
+
+  err = esp_efuse_write_key(EFUSE_BLK_KEY4, ESP_EFUSE_KEY_PURPOSE_ECDSA_KEY,
+                            ecdsa_key, sizeof(ecdsa_key));
+  mbedtls_platform_zeroize(ecdsa_key, sizeof(ecdsa_key));
+
+  if (err != ESP_OK)
+    return err;
+
+  /* Verify protections */
+  if (!esp_efuse_get_key_dis_read(EFUSE_BLK_KEY4) ||
+      !esp_efuse_get_key_dis_write(EFUSE_BLK_KEY4) ||
+      !esp_efuse_get_keypurpose_dis_write(EFUSE_BLK_KEY4)) {
+    return ESP_FAIL;
+  }
+
+  return ESP_OK;
+}
+
+/**
+ * SS 210: Get eFuse KEY4 status.
+ */
+esp_err_t _ss_tang_tee_efuse_ecdsa_status(uint32_t *status_out) {
+  if (!status_out)
+    return ESP_ERR_INVALID_ARG;
+
+  esp_efuse_purpose_t purpose;
+  esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_KEY_PURPOSE_4, &purpose,
+                                            sizeof(purpose) * 8);
+  if (err != ESP_OK)
+    return err;
+
+  if (purpose == ESP_EFUSE_KEY_PURPOSE_ECDSA_KEY)
     *status_out = 1; /* TEE_EFUSE_STATUS_PROVISIONED */
   else if (purpose == ESP_EFUSE_KEY_PURPOSE_USER)
     *status_out = 0; /* TEE_EFUSE_STATUS_FREE */

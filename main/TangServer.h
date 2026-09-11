@@ -180,7 +180,8 @@ void setup_wifi_sta(const char *ssid, const char *password,
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
-  // esp_wifi_set_band_mode() requires WiFi to already be started (ESP_ERR_WIFI_NOT_STARTED otherwise)
+  // esp_wifi_set_band_mode() requires WiFi to already be started
+  // (ESP_ERR_WIFI_NOT_STARTED otherwise)
   ESP_ERROR_CHECK(esp_wifi_set_band_mode(band_mode));
 
   ESP_LOGI(TAG, "Connecting to SSID: %s (hostname: %s)", ssid, hostname);
@@ -430,18 +431,32 @@ void setup() {
                   "HMAC key derivation will not work");
   }
 
+  // 2a. Provision eFuse KEY4 for ECDSA signing key
+  if (is_efuse_key4_ecdsa()) {
+    ESP_LOGI(TAG, "eFuse KEY4 already provisioned for ECDSA");
+  } else if (is_efuse_key4_free()) {
+    ESP_LOGI(TAG, "First boot — provisioning eFuse ECDSA key in KEY4...");
+    if (provision_efuse_key4()) {
+      ESP_LOGI(TAG, "eFuse KEY4 provisioned");
+    } else {
+      ESP_LOGE(TAG, "eFuse KEY4 provisioning failed");
+    }
+  } else {
+    ESP_LOGE(TAG, "eFuse KEY4 has wrong purpose — "
+                  "ECDSA signing will not work");
+  }
+
   // 2b. Ensure TEE salt exists (may be missing after re-flash)
   if (is_efuse_key5_hmac_up() && !ensure_tee_salt()) {
     ESP_LOGE(TAG, "Failed to initialize TEE salt");
   }
 
-  // 3. Initialize signing key in TEE Secure Storage (first boot generates,
-  //    subsequent boots are a no-op). Then load the public key.
-  keystore.init_signing_key();
-  if (keystore.load_signing_pub_from_tee()) {
+  // 3. Initialize signing key (we use KEY4, but we need to load public key)
+  keystore.init_signing_key(); // This will just load pub key from hardware now
+  if (keystore.sig_loaded) {
     ESP_LOGI(TAG, "Signing public key loaded");
   } else {
-    ESP_LOGW(TAG, "Failed to load signing public key from TEE");
+    ESP_LOGW(TAG, "Failed to load signing public key");
   }
 
   // 4. Load exchange public keys if available (for /adv before activation)

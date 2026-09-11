@@ -21,7 +21,7 @@ This device uses Secure Boot V2 (ECDSA), Flash Encryption, and TEE with secure s
 | 1     | `XTS_AES_128_KEY` (flash encryption)      | Auto — first boot                   |
 | 2     | `HMAC_UP` (TEE secure storage encryption) | Manual — before first boot          |
 | 3     | `HMAC_UP` (TEE PBKDF2 key derivation)     | Manual — before first boot          |
-| 4     | Unused                                    | —                                   |
+| 4     | `ECDSA_KEY` (tang-sig signing key)        | Auto — firmware first boot (SS 209) |
 | 5     | `HMAC_UP` (application HMAC)              | Auto — firmware first boot (SS 206) |
 
 ## Flash Layout
@@ -72,22 +72,22 @@ With `CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS=y`, this can be done before or af
 
 > **WARNING: This is irreversible.**
 
-Find the port of your device (e.g. `/dev/ttyACM0`) with `sudo dmesg -w` or `ls /dev/ttyACM*`. Then run:
+Find the port of your device (e.g. `/dev/ttyACM1`) with `sudo dmesg -w` or `ls /dev/ttyACM*`. Then run:
 
 ```bash
-espefuse.py --port /dev/ttyACM0 \
+espefuse.py --port /dev/ttyACM1 \
   burn_key BLOCK_KEY2 tee_sec_stg_hmac.bin HMAC_UP
 ```
 
 ```
-espefuse.py --port /dev/ttyACM0 \
+espefuse.py --port /dev/ttyACM1 \
   burn_key BLOCK_KEY3 tee_pbkdf2_hmac.bin HMAC_UP
 ```
 
 ### 5. Verify eFuse state
 
 ```bash
-espefuse.py --port /dev/ttyACM0 summary | grep KEY_PURPOSE
+espefuse.py --port /dev/ttyACM1 summary | grep KEY_PURPOSE
 ```
 
 Expected output should show blocks 2 and 3 as `HMAC_UP`.
@@ -95,7 +95,7 @@ Expected output should show blocks 2 and 3 as `HMAC_UP`.
 ### 6. Flash all images at once
 
 ```bash
-esptool.py --chip esp32c5 -p /dev/ttyACM0 --baud 460800 \
+esptool.py --chip esp32c5 -p /dev/ttyACM1 --baud 460800 \
   --before=default-reset --after=no-reset --no-stub \
   write-flash --flash-mode dio --flash-freq 80m --flash-size 2MB \
   0x2000 build/bootloader/bootloader.bin \
@@ -117,7 +117,7 @@ On first boot, the bootloader will automatically:
 ### 8. Monitor
 
 ```bash
-idf.py -p /dev/ttyACM0 monitor
+idf.py -p /dev/ttyACM1 monitor
 ```
 
 > A soft reset may cause a race condition with the ESP32-C5 crypto hardware causing a bootloop. In that case press the reset button to hard-reset and it should boot normally.
@@ -137,13 +137,13 @@ Verify:
 After all eFuse keys are provisioned and read-protected, permanently lock `RD_DIS` to prevent any further read-protection changes:
 
 ```bash
-espefuse.py --port /dev/ttyACM0 write_protect_efuse RD_DIS
+espefuse.py --port /dev/ttyACM1 write_protect_efuse RD_DIS
 ```
 
 This burns `WR_DIS_RD_DIS`, giving the same final security posture as the default (without `ALLOW_EFUSE_RD_DIS`). Verify with:
 
 ```bash
-espefuse.py --port /dev/ttyACM0 summary 2>&1 | grep RD_DIS
+espefuse.py --port /dev/ttyACM1 summary 2>&1 | grep RD_DIS
 ```
 
 > **WARNING: This is irreversible.** Only do this after confirming all HMAC key blocks are correctly provisioned and read-protected.
@@ -155,7 +155,7 @@ Since flash encryption is active (`SPI_BOOT_CRYPT_CNT` has odd bits set), you **
 The simplest option is `idf.py encrypted-flash`, which flashes everything except the bootloader with encryption:
 
 ```bash
-idf.py -p /dev/ttyACM0 encrypted-flash
+idf.py -p /dev/ttyACM1 encrypted-flash
 ```
 
 > **Note:** `idf.py encrypted-flash` (like `idf.py flash`) skips the bootloader when secure boot is enabled. To flash the bootloader as well, use esptool directly:

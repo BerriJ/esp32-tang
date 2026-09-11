@@ -47,6 +47,44 @@ bool provision_efuse_key5() {
 }
 
 /**
+ * Check if EFUSE BLOCK_KEY4 is correctly provisioned for ECDSA key.
+ */
+bool is_efuse_key4_ecdsa() {
+  uint32_t status = 0;
+  esp_err_t err = tang_tee_efuse_ecdsa_status(&status);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG_PROVISION, "TEE efuse KEY4 status query failed: %s",
+             esp_err_to_name(err));
+    return false;
+  }
+  return (status == TEE_EFUSE_STATUS_PROVISIONED);
+}
+
+/**
+ * Check if EFUSE BLOCK_KEY4 is unused.
+ */
+bool is_efuse_key4_free() {
+  uint32_t status = 0;
+  esp_err_t err = tang_tee_efuse_ecdsa_status(&status);
+  if (err != ESP_OK)
+    return false;
+  return (status == TEE_EFUSE_STATUS_FREE);
+}
+
+/**
+ * Burn a random 256-bit ECDSA key to eFuse KEY4 via TEE.
+ */
+bool provision_efuse_key4() {
+  esp_err_t err = tang_tee_provision_efuse_ecdsa();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG_PROVISION, "eFuse KEY4 provisioning failed: %s",
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+/**
  * Ensure tee_salt exists in TEE Secure Storage.
  * Generates a random salt if missing (e.g. after re-flash), no-op otherwise.
  */

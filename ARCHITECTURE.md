@@ -50,13 +50,12 @@ components/
 On each power-on the device executes these steps (in `setup()`):
 
 1. **NVS init** — initialize non-volatile storage.
-2. **eFuse KEY5 provisioning** — if KEY5 is unused, the TEE generates a random
-   256-bit HMAC key, burns it into eFuse block KEY5 with purpose `HMAC_UP`, and
-   sets read/write protections. It also generates a random 32-byte `tee_salt`
+2. **eFuse KEY5 & KEY4 provisioning** — if KEY4 or KEY5 are unused, the TEE generates random
+   256-bit keys and burns them into eFuse with purpose `ECDSA_KEY` and `HMAC_UP` respectively.
+   It sets read/write protections. It also generates a random 32-byte `tee_salt`
    and stores it in TEE NVS. This is a **one-time, irreversible** operation.
-3. **Initialize signing key** — on first boot the TEE Secure Storage generates
-   a random P-256 signing key (persisted encrypted in flash, `WRITE_ONCE`).
-   The signing public key is loaded into REE memory.
+3. **Initialize signing key** — on first boot (or any boot), the REE uses the ECDSA HAL
+   to load the public key derived from eFuse `BLOCK_KEY4`.
 4. **Load exchange public keys** and generation counter from NVS.
 5. **Initialize ZKAuth** — generate the first ephemeral ECDH tunnel keypair
    (P-256) for the ECIES channel. The keypair is regenerated after every use
@@ -87,7 +86,7 @@ The system uses two independent key hierarchies:
    password-based recovery.
 
 ```
-┌─ TEE Secure Storage (encrypted flash, WRITE_ONCE) ─────────────┐
+┌─ eFuse BLOCK_KEY4 (hardware, read-protected) ─────────────┐
 │  Random P-256 signing key (generated on first boot)             │
 │    → signing public key = d × G                                 │
 │    → signs /adv JWS (ES256)                                     │
@@ -166,19 +165,19 @@ zeroized immediately after use.
 ### 3. Signing Key (ECDSA P-256)
 
 The signing key is a **random** P-256 key generated on first boot and stored in
-TEE Secure Storage (ESP-TEE `esp_tee_sec_storage` API, key ID `"tang-sig"`).
+eFuse BLOCK_KEY4 via the TEE (SS 209).
 
 - **Curve**: NIST P-256 (secp256r1)
 - **Purpose**: signs the `/adv` JWS response (ES256) so clients can verify
   authenticity of the advertised key set.
 - **Lifetime**: permanent — survives reboots, lock/unlock cycles, and password
   changes. Generated once per device.
-- **Storage**: encrypted in flash by the TEE Secure Storage subsystem,
-  inaccessible to REE. The `WRITE_ONCE` flag prevents overwriting.
+- **Storage**: hardware-protected in eFuse,
+  inaccessible to REE. The eFuse write-protection prevents overwriting.
 - **Independence**: completely decoupled from the password hierarchy. A password
   change does **not** affect the signing key.
 - The private key never leaves the TEE. Signing is performed via
-  `esp_tee_sec_storage_ecdsa_sign()`.
+  `hardware ECDSA peripheral (via ecdsa_hal_gen_signature)`.
 
 ### 4. Exchange Keys (ECDH P-256, Generational)
 
@@ -208,6 +207,18 @@ exchange_priv[gen] = HMAC-SHA256(master_key, "tang-exchange-key-{gen}" || 0x01)
 ---
 
 ## Key Storage
+
+### eFuse KEY4 (Hardware, One-Time)
+
+| Property       | Value                                                 |
+| -------------- | ----------------------------------------------------- |
+| Block          | `EFUSE_BLK_KEY4`                                      |
+| Purpose        | `ECDSA_KEY` (ECDSA signing key)                       |
+| Size           | 256 bits                                              |
+| Protections    | Read-disabled, write-disabled, purpose-write-disabled |
+| Provisioned by | `tang_tee_provision_efuse_ecdsa()` on first boot      |
+
+The raw key cannot be read by software. It is only accessible through the hardware ECDSA peripheral.
 
 ### eFuse KEY5 (Hardware, One-Time)
 
@@ -252,8 +263,7 @@ before the function returns. Exchange private keys are read from TEE NVS
 
 ### TEE NVS (Persistent, TEE-Only)
 
-The TEE uses the `secure_storage` NVS partition (encrypted by eFuse KEY3),
-with two namespaces:
+The TEE uses the `secure_storage` NVS partition (encrypted by eFuse KEY3):
 
 **Namespace `tang_keys`** — exchange private keys and TEE salt:
 
@@ -272,18 +282,6 @@ Exchange private keys are written on first activation and updated on password
 change or rotation. They are read from flash per ECDH/rotate operation (no RAM
 cache) and zeroized from the stack immediately after use. The partition-level
 encryption (eFuse KEY3) protects them at rest.
-
-### TEE Secure Storage (Persistent, Encrypted)
-
-The signing key is stored in the TEE Secure Storage subsystem, which persists
-keys in encrypted flash using a device-specific encryption key. Unlike TEE SRAM,
-this data survives reboots and lock/unlock cycles.
-
-| Key ID       | Type        | Flags        | Description          |
-| ------------ | ----------- | ------------ | -------------------- |
-| `"tang-sig"` | ECDSA P-256 | `WRITE_ONCE` | Tang JWS signing key |
-
----
 
 ## ECIES Tunnel (Password Transport)
 

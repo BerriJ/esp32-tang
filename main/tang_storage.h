@@ -1,3 +1,4 @@
+#include "hal/efuse_hal.h"
 #ifndef TANG_STORAGE_H
 #define TANG_STORAGE_H
 
@@ -9,6 +10,8 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <sdkconfig.h>
+#include <psa/crypto.h>
+#include "psa_crypto_driver_esp_ecdsa.h"
 
 static const char *TAG_STORAGE = "tang_storage";
 
@@ -71,41 +74,33 @@ public:
     return found;
   }
 
-  // Generate the stable signing key in TEE Secure Storage (first boot only).
-  // Idempotent — silently succeeds if the key already exists.
-  bool init_signing_key() {
-    esp_tee_sec_storage_key_cfg_t cfg = {.id = "tang-sig",
-                                         .type = ESP_SEC_STG_KEY_ECDSA_SECP256R1,
-                                         .flags = SEC_STORAGE_FLAG_WRITE_ONCE};
-    esp_err_t err = esp_tee_sec_storage_gen_key(&cfg);
-    if (err == ESP_OK) {
-      ESP_LOGI(TAG_STORAGE, "Signing key generated in TEE Secure Storage");
-      return true;
-    }
-    // Key already exists — treat as success
-    ESP_LOGI(TAG_STORAGE, "Signing key already in TEE Secure Storage");
-    return true;
-  }
+  // Load signing public key from eFuse KEY4 via PSA Crypto Opaque Driver
+  void init_signing_key() {
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attributes, 256);
 
-  // Load signing public key from TEE Secure Storage
-  bool load_signing_pub_from_tee() {
-    esp_tee_sec_storage_key_cfg_t cfg = {.id = "tang-sig",
-                                         .type = ESP_SEC_STG_KEY_ECDSA_SECP256R1,
-                                         .flags = SEC_STORAGE_FLAG_NONE};
-    esp_tee_sec_storage_ecdsa_pubkey_t pubkey;
-    esp_err_t err = esp_tee_sec_storage_ecdsa_get_pubkey(&cfg, &pubkey);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG_STORAGE, "Failed to load signing pubkey from TEE: %s",
-               esp_err_to_name(err));
-      sig_loaded = false;
-      return false;
+    esp_ecdsa_opaque_key_t opaque_key = {};
+    opaque_key.curve = ESP_ECDSA_CURVE_SECP256R1;
+    opaque_key.efuse_block = 8; // 8
+
+    uint8_t data[65]; // 1 byte format + 64 bytes coordinates
+    size_t data_length = 0;
+    psa_status_t status = esp_ecdsa_opaque_export_public_key(&attributes,
+                                                             (const uint8_t *)&opaque_key,
+                                                             sizeof(opaque_key),
+                                                             data,
+                                                             sizeof(data),
+                                                             &data_length);
+
+    if (status == PSA_SUCCESS && data_length == 65 && data[0] == 0x04) {
+        memcpy(sig_pub, data + 1, 64);
+        sig_loaded = true;
+        ESP_LOGI(TAG_STORAGE, "Signing public key loaded from eFuse KEY4 via PSA");
+    } else {
+        ESP_LOGE(TAG_STORAGE, "Failed to load public key: %d (len=%d)", status, (int)data_length);
+        sig_loaded = false;
     }
-    memcpy(sig_pub, pubkey.pub_x, TEE_EC_COORDINATE_SIZE);
-    memcpy(sig_pub + TEE_EC_COORDINATE_SIZE, pubkey.pub_y,
-           TEE_EC_COORDINATE_SIZE);
-    sig_loaded = true;
-    ESP_LOGI(TAG_STORAGE, "Signing public key loaded from TEE Secure Storage");
-    return true;
   }
 
   // Derive exchange keys via TEE, compute public keys.

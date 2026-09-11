@@ -33,3 +33,11 @@ secure_services:
         type: custom
         function: tang_tee_ensure_tee_salt
         args: 0
+      - id: 209
+        type: custom
+        function: tang_tee_provision_efuse_ecdsa
+        args: 0
+      - id: 210
+        type: custom
+        function: tang_tee_efuse_ecdsa_status
+        args: 1

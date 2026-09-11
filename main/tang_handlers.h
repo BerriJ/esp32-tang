@@ -9,6 +9,7 @@
 #include <esp_log.h>
 #include <psa/crypto.h>
 #include <string.h>
+#include "psa_crypto_driver_esp_ecdsa.h"
 
 static const char *TAG_HANDLERS = "tang_handlers";
 
@@ -110,24 +111,34 @@ static esp_err_t handle_adv(httpd_req_t *req) {
                    strlen(signing_input), hash, sizeof(hash), &hash_len);
   free(signing_input);
 
-  // Sign via TEE Secure Storage — private key never leaves the TEE
-  uint8_t signature[TEE_EC_SIGNATURE_SIZE]; // r(32) + s(32)
-  esp_tee_sec_storage_key_cfg_t sign_cfg = {.id = "tang-sig",
-                                            .type = ESP_SEC_STG_KEY_ECDSA_SECP256R1,
-                                            .flags = SEC_STORAGE_FLAG_NONE};
-  esp_tee_sec_storage_ecdsa_sign_t sign_out;
-  esp_err_t sign_err =
-      esp_tee_sec_storage_ecdsa_sign(&sign_cfg, hash, sizeof(hash), &sign_out);
+  // Sign using eFuse BLOCK_KEY4 via PSA Crypto Opaque Driver
+  psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+  psa_set_key_bits(&attributes, 256);
 
-  if (sign_err != ESP_OK) {
-    ESP_LOGE(TAG_HANDLERS, "TEE signing failed: %s", esp_err_to_name(sign_err));
+  esp_ecdsa_opaque_key_t opaque_key = {};
+  opaque_key.curve = ESP_ECDSA_CURVE_SECP256R1;
+  opaque_key.efuse_block = 8; // 8
+
+  uint8_t signature[TEE_EC_SIGNATURE_SIZE]; // r(32) + s(32)
+  size_t sig_len = 0;
+  psa_status_t status = esp_ecdsa_opaque_sign_hash(&attributes,
+                                                   (const uint8_t *)&opaque_key,
+                                                   sizeof(opaque_key),
+                                                   PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                                                   hash,
+                                                   sizeof(hash),
+                                                   signature,
+                                                   sizeof(signature),
+                                                   &sig_len);
+
+  if (status != PSA_SUCCESS || sig_len != TEE_EC_SIGNATURE_SIZE) {
+    ESP_LOGE(TAG_HANDLERS, "PSA signing failed: %d", status);
     free(payload_b64);
     free(protected_b64);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Signing failed");
     return ESP_FAIL;
   }
-
-  memcpy(signature, sign_out.signature, TEE_EC_SIGNATURE_SIZE);
 
   char sig_b64[96] = {0};
   b64url_encode_buf(signature, sizeof(signature), sig_b64, sizeof(sig_b64));

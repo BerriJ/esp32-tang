@@ -138,6 +138,26 @@ static inline esp_err_t tang_tee_efuse_status(uint32_t *status_out) {
                                          status_out);
 }
 
+/**
+ * Provision eFuse KEY4 with a random ECDSA key.
+ * No-op if KEY4 is already provisioned for ECDSA.
+ *
+ * @return ESP_OK on success or if already provisioned
+ */
+static inline esp_err_t tang_tee_provision_efuse_ecdsa(void) {
+  return (esp_err_t)esp_tee_service_call(1, SS_TANG_TEE_PROVISION_EFUSE_ECDSA);
+}
+
+/**
+ * Get eFuse KEY4 provisioning status.
+ *
+ * @param status_out  Output: TEE_EFUSE_STATUS_FREE, _PROVISIONED, or _WRONG_PURPOSE
+ * @return ESP_OK on success
+ */
+static inline esp_err_t tang_tee_efuse_ecdsa_status(uint32_t *status_out) {
+  return (esp_err_t)esp_tee_service_call(2, SS_TANG_TEE_EFUSE_ECDSA_STATUS, status_out);
+}
+
 #ifdef __cplusplus
 }
 #endif
