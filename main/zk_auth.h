@@ -179,16 +179,12 @@ private:
       return NULL;
     }
 
-    uint8_t *iv = blob;
-    uint8_t *ciphertext = blob + 16;
     uint8_t *received_hmac = blob + 16 + ct_len;
-
-    uint8_t computed_hmac[32];
     {
       psa_key_attributes_t mac_attr = PSA_KEY_ATTRIBUTES_INIT;
       psa_set_key_type(&mac_attr, PSA_KEY_TYPE_HMAC);
       psa_set_key_algorithm(&mac_attr, PSA_ALG_HMAC(PSA_ALG_SHA_256));
-      psa_set_key_usage_flags(&mac_attr, PSA_KEY_USAGE_SIGN_MESSAGE);
+      psa_set_key_usage_flags(&mac_attr, PSA_KEY_USAGE_VERIFY_MESSAGE);
       psa_key_id_t hmac_key_id = PSA_KEY_ID_NULL;
       psa_status_t mac_ret =
           psa_import_key(&mac_attr, mac_key, 32, &hmac_key_id);
@@ -199,30 +195,17 @@ private:
         *error_json = strdup("{\"error\":\"HMAC setup failed\"}");
         return NULL;
       }
-      size_t mac_out_len;
-      mac_ret = psa_mac_compute(hmac_key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256),
-                                blob, 16 + ct_len, computed_hmac,
-                                sizeof(computed_hmac), &mac_out_len);
+      mac_ret = psa_mac_verify(hmac_key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256),
+                               blob, 16 + ct_len, received_hmac, 32);
       psa_destroy_key(hmac_key_id);
       if (mac_ret != PSA_SUCCESS) {
         free(blob);
         mbedtls_platform_zeroize(enc_key, 32);
-        *error_json = strdup("{\"error\":\"HMAC computation failed\"}");
+        ESP_LOGW(TAG_ZK_AUTH, "HMAC verification failed");
+        *error_json = strdup(
+            "{\"error\":\"Authentication failed - data tampered or wrong key\"}");
         return NULL;
       }
-    }
-
-    int hmac_result = 0;
-    for (int i = 0; i < 32; i++)
-      hmac_result |= received_hmac[i] ^ computed_hmac[i];
-
-    if (hmac_result != 0) {
-      free(blob);
-      mbedtls_platform_zeroize(enc_key, 32);
-      ESP_LOGW(TAG_ZK_AUTH, "HMAC verification failed");
-      *error_json = strdup(
-          "{\"error\":\"Authentication failed - data tampered or wrong key\"}");
-      return NULL;
     }
 
     psa_key_attributes_t aes_attr = PSA_KEY_ATTRIBUTES_INIT;
@@ -247,40 +230,14 @@ private:
       return NULL;
     }
 
-    psa_cipher_operation_t cipher_op = PSA_CIPHER_OPERATION_INIT;
-    aes_ret = psa_cipher_decrypt_setup(&cipher_op, aes_key_id,
-                                       PSA_ALG_CBC_NO_PADDING);
+    size_t out_length = 0;
+    aes_ret = psa_cipher_decrypt(aes_key_id, PSA_ALG_CBC_NO_PADDING,
+                                 blob, 16 + ct_len,
+                                 plaintext, ct_len, &out_length);
     psa_destroy_key(aes_key_id);
-    if (aes_ret != PSA_SUCCESS) {
-      free(plaintext);
-      free(blob);
-      *error_json = strdup("{\"error\":\"AES setup failed\"}");
-      return NULL;
-    }
-
-    aes_ret = psa_cipher_set_iv(&cipher_op, iv, 16);
-    if (aes_ret != PSA_SUCCESS) {
-      psa_cipher_abort(&cipher_op);
-      free(plaintext);
-      free(blob);
-      *error_json = strdup("{\"error\":\"AES IV setup failed\"}");
-      return NULL;
-    }
-
-    size_t out1 = 0, out2 = 0;
-    aes_ret = psa_cipher_update(&cipher_op, ciphertext, ct_len, plaintext,
-                                ct_len, &out1);
     free(blob);
-    if (aes_ret != PSA_SUCCESS) {
-      psa_cipher_abort(&cipher_op);
-      free(plaintext);
-      *error_json = strdup("{\"error\":\"Decryption failed\"}");
-      return NULL;
-    }
 
-    aes_ret =
-        psa_cipher_finish(&cipher_op, plaintext + out1, ct_len - out1, &out2);
-    if (aes_ret != PSA_SUCCESS) {
+    if (aes_ret != PSA_SUCCESS || out_length != ct_len) {
       free(plaintext);
       *error_json = strdup("{\"error\":\"Decryption failed\"}");
       return NULL;

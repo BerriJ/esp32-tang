@@ -39,7 +39,7 @@ See [PROVISIONING.md](PROVISIONING.md) for production deployment steps including
 
 ### Usage
 
-1. **First boot** — if no WiFi is configured, the device starts a SoftAP (`ESP-Tang-Setup`). Connect and visit `https://192.168.4.1` to enter WiFi credentials.
+1. **First boot** — if no WiFi is configured, the device starts a SoftAP (`ESP-Tang-Setup`). Connect and visit [https://192.168.4.1](https://192.168.4.1) to enter WiFi credentials.
 2. **Unlock** — open `https://<device-ip>/` in a browser and enter the password. On first use this initializes the Tang keys; on subsequent boots it activates the server.
 3. **Bind a client** — once unlocked, use clevis or curl:
    ```bash
