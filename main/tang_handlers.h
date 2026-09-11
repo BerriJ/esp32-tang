@@ -112,12 +112,12 @@ static esp_err_t handle_adv(httpd_req_t *req) {
 
   // Sign via TEE Secure Storage — private key never leaves the TEE
   uint8_t signature[TEE_EC_SIGNATURE_SIZE]; // r(32) + s(32)
-  tee_sec_stg_key_cfg_t sign_cfg = {.id = "tang-sig",
-                                    .type = TEE_SEC_STG_KEY_ECDSA_SECP256R1,
-                                    .flags = TEE_SEC_STG_FLAG_NONE};
-  tee_sec_stg_ecdsa_sign_t sign_out;
+  esp_tee_sec_storage_key_cfg_t sign_cfg = {.id = "tang-sig",
+                                            .type = ESP_SEC_STG_KEY_ECDSA_SECP256R1,
+                                            .flags = SEC_STORAGE_FLAG_NONE};
+  esp_tee_sec_storage_ecdsa_sign_t sign_out;
   esp_err_t sign_err =
-      tee_sec_stg_ecdsa_sign(&sign_cfg, hash, sizeof(hash), &sign_out);
+      esp_tee_sec_storage_ecdsa_sign(&sign_cfg, hash, sizeof(hash), &sign_out);
 
   if (sign_err != ESP_OK) {
     ESP_LOGE(TAG_HANDLERS, "TEE signing failed: %s", esp_err_to_name(sign_err));
@@ -127,9 +127,7 @@ static esp_err_t handle_adv(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  memcpy(signature, sign_out.sign_r, TEE_EC_COORDINATE_SIZE);
-  memcpy(signature + TEE_EC_COORDINATE_SIZE, sign_out.sign_s,
-         TEE_EC_COORDINATE_SIZE);
+  memcpy(signature, sign_out.signature, TEE_EC_SIGNATURE_SIZE);
 
   char sig_b64[96] = {0};
   b64url_encode_buf(signature, sizeof(signature), sig_b64, sizeof(sig_b64));

@@ -3,8 +3,8 @@
 
 #include "esp_err.h"
 #include "esp_tee.h"
+#include "esp_tee_sec_storage.h"
 #include "secure_service_num.h"
-#include "soc/soc_caps.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -17,78 +17,10 @@ extern "C" {
 #define TEE_EC_COORDINATE_SIZE 32
 #define TEE_EC_SIGNATURE_SIZE 64
 
-/* Must match MAX_ECDSA_SUPPORTED_KEY_LEN in esp_tee_sec_storage.h exactly —
- * on chips with SECP384R1 support (e.g. esp32c5) the TEE pads pub_x/pub_y to
- * 48 bytes each, so a hardcoded 32 here silently misaligns the Y coordinate
- * and overflows this struct's storage when copied out of the TEE. */
-#if SOC_ECDSA_SUPPORT_CURVE_P384
-#define TEE_SEC_STG_MAX_ECDSA_KEY_LEN 48
-#else
-#define TEE_SEC_STG_MAX_ECDSA_KEY_LEN 32
-#endif
-
 /* eFuse status codes returned by tang_tee_efuse_status() */
 #define TEE_EFUSE_STATUS_FREE 0
 #define TEE_EFUSE_STATUS_PROVISIONED 1
 #define TEE_EFUSE_STATUS_WRONG_PURPOSE 2
-
-/* --- TEE Secure Storage types (mirrors esp_tee_sec_storage.h) --- */
-
-typedef enum {
-  TEE_SEC_STG_KEY_AES256 = 0,
-  TEE_SEC_STG_KEY_ECDSA_SECP256R1 = 1,
-  TEE_SEC_STG_KEY_ECDSA_SECP192R1 = 2,
-} tee_sec_stg_key_type_t;
-
-#define TEE_SEC_STG_FLAG_NONE 0
-#define TEE_SEC_STG_FLAG_WRITE_ONCE (1 << 0)
-
-typedef struct {
-  const char *id;
-  tee_sec_stg_key_type_t type;
-  uint32_t flags;
-} tee_sec_stg_key_cfg_t;
-
-typedef struct {
-  uint8_t pub_x[TEE_SEC_STG_MAX_ECDSA_KEY_LEN];
-  uint8_t pub_y[TEE_SEC_STG_MAX_ECDSA_KEY_LEN];
-} __attribute__((__packed__)) tee_sec_stg_ecdsa_pubkey_t;
-
-typedef struct {
-  uint8_t sign_r[TEE_EC_COORDINATE_SIZE];
-  uint8_t sign_s[TEE_EC_COORDINATE_SIZE];
-} __attribute__((__packed__)) tee_sec_stg_ecdsa_sign_t;
-
-/* --- TEE Secure Storage wrappers (framework services) --- */
-
-/**
- * Generate an ECDSA P-256 key and store it in TEE Secure Storage.
- * Idempotent with WRITE_ONCE — returns success-ish if key already exists.
- */
-static inline esp_err_t tee_sec_stg_gen_key(const tee_sec_stg_key_cfg_t *cfg) {
-  return (esp_err_t)esp_tee_service_call(2, SS_ESP_TEE_SEC_STORAGE_GEN_KEY,
-                                         cfg);
-}
-
-/**
- * Sign a hash with a key stored in TEE Secure Storage (ECDSA P-256).
- */
-static inline esp_err_t
-tee_sec_stg_ecdsa_sign(const tee_sec_stg_key_cfg_t *cfg, const uint8_t *hash,
-                       size_t hlen, tee_sec_stg_ecdsa_sign_t *out_sign) {
-  return (esp_err_t)esp_tee_service_call(5, SS_ESP_TEE_SEC_STORAGE_ECDSA_SIGN,
-                                         cfg, hash, hlen, out_sign);
-}
-
-/**
- * Get the public key of an ECDSA key stored in TEE Secure Storage.
- */
-static inline esp_err_t
-tee_sec_stg_ecdsa_get_pubkey(const tee_sec_stg_key_cfg_t *cfg,
-                             tee_sec_stg_ecdsa_pubkey_t *out_pubkey) {
-  return (esp_err_t)esp_tee_service_call(
-      3, SS_ESP_TEE_SEC_STORAGE_ECDSA_GET_PUBKEY, cfg, out_pubkey);
-}
 
 /* --- Tang custom TEE services --- */
 

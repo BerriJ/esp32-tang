@@ -74,10 +74,10 @@ public:
   // Generate the stable signing key in TEE Secure Storage (first boot only).
   // Idempotent — silently succeeds if the key already exists.
   bool init_signing_key() {
-    tee_sec_stg_key_cfg_t cfg = {.id = "tang-sig",
-                                 .type = TEE_SEC_STG_KEY_ECDSA_SECP256R1,
-                                 .flags = TEE_SEC_STG_FLAG_WRITE_ONCE};
-    esp_err_t err = tee_sec_stg_gen_key(&cfg);
+    esp_tee_sec_storage_key_cfg_t cfg = {.id = "tang-sig",
+                                         .type = ESP_SEC_STG_KEY_ECDSA_SECP256R1,
+                                         .flags = SEC_STORAGE_FLAG_WRITE_ONCE};
+    esp_err_t err = esp_tee_sec_storage_gen_key(&cfg);
     if (err == ESP_OK) {
       ESP_LOGI(TAG_STORAGE, "Signing key generated in TEE Secure Storage");
       return true;
@@ -89,11 +89,11 @@ public:
 
   // Load signing public key from TEE Secure Storage
   bool load_signing_pub_from_tee() {
-    tee_sec_stg_key_cfg_t cfg = {.id = "tang-sig",
-                                 .type = TEE_SEC_STG_KEY_ECDSA_SECP256R1,
-                                 .flags = TEE_SEC_STG_FLAG_NONE};
-    tee_sec_stg_ecdsa_pubkey_t pubkey;
-    esp_err_t err = tee_sec_stg_ecdsa_get_pubkey(&cfg, &pubkey);
+    esp_tee_sec_storage_key_cfg_t cfg = {.id = "tang-sig",
+                                         .type = ESP_SEC_STG_KEY_ECDSA_SECP256R1,
+                                         .flags = SEC_STORAGE_FLAG_NONE};
+    esp_tee_sec_storage_ecdsa_pubkey_t pubkey;
+    esp_err_t err = esp_tee_sec_storage_ecdsa_get_pubkey(&cfg, &pubkey);
     if (err != ESP_OK) {
       ESP_LOGE(TAG_STORAGE, "Failed to load signing pubkey from TEE: %s",
                esp_err_to_name(err));

@@ -10,5 +10,5 @@ if(esp_tee_build)
 else()
     # REE build: only expose the header (wrapper functions calling esp_tee_service_call)
     idf_component_register(INCLUDE_DIRS include
-                           REQUIRES esp_tee)
+                           REQUIRES esp_tee tee_sec_storage)
 endif()
