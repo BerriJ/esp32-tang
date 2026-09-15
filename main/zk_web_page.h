@@ -416,6 +416,56 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
         .mt-10 {
             margin-top: 10px;
         }
+
+        .fingerprint-val {
+            font-family: monospace;
+            font-size: 11px;
+            margin: 0 4px;
+            padding: 2px 4px;
+            background: white;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+        
+        .fingerprint-block {
+            display: inline-block;
+            margin: 4px 0;
+        }
+
+        .fingerprint-trigger {
+            cursor: pointer;
+            text-decoration: underline;
+            text-decoration-style: dotted;
+            color: #4a6d4a;
+        }
+
+        .fingerprint-val-container {
+            display: none;
+            text-align: center;
+        }
+
+        .fingerprint-trigger:hover ~ .fingerprint-val-container,
+        .fingerprint-val-container:hover {
+            display: block;
+        }
+
+        .randomart-container {
+            text-align: center;
+        }
+        
+        .randomart {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 11px;
+            background: transparent;
+            padding: 10px 0;
+            margin: 8px 0;
+            line-height: 1.2;
+            white-space: pre;
+            text-align: left;
+            display: inline-block;
+            border: none;
+            color: #333;
+        }
     </style>
 </head>
 <body>
@@ -433,6 +483,8 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                 <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Privacy First:</strong> Your password is never transmitted. 
                 The device only receives an encrypted, derived key over an ECIES tunnel.
             </div>
+            
+            <div class="info-box security-notice" style="display: none;"></div>
             
             <form id="unlockForm">
             <div class="form-group">
@@ -493,6 +545,8 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
                 <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Key Rotation:</strong> Changing the password will generate new Tang encryption keys. Clients bound to the old keys will need to be re-enrolled.
             </div>
             
+            <div class="info-box security-notice" style="display: none;"></div>
+            
             <form id="changePasswordForm">
             <div class="form-group">
                 <label for="currentPassword">Current Password</label>
@@ -523,6 +577,8 @@ const char ZK_WEB_PAGE[] = R"rawliteral(
             <div class="info-box">
                 <strong><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg> Key Rotation:</strong> This will generate a new exchange key and drop the oldest one. Existing clients using recent keys will continue to work.
             </div>
+            
+            <div class="info-box security-notice" style="display: none;"></div>
             
             <form id="rotateForm">
             <div class="form-group">
@@ -625,6 +681,7 @@ async function loadDeviceIdentity() {
 async function verifyTunnelKeySignature(identity) {
     const signingKeyHex = identity.signingKey;
     const pinnedKey = localStorage.getItem('pinnedSigningKey');
+    let isFirstTrust = false;
 
     if (pinnedKey) {
         // Verify the signing key hasn't changed since we first connected
@@ -634,6 +691,7 @@ async function verifyTunnelKeySignature(identity) {
     } else {
         // First connection: pin the signing key
         localStorage.setItem('pinnedSigningKey', signingKeyHex);
+        isFirstTrust = true;
     }
 
     // Import the signing public key for ECDSA verification
@@ -660,6 +718,46 @@ async function verifyTunnelKeySignature(identity) {
     if (!valid) {
         throw new Error('Tunnel key signature verification failed — possible MITM');
     }
+
+    const fingerprintBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', signingKeyBytes));
+    const base64String = btoa(String.fromCharCode(...fingerprintBytes)).replace(/=+$/, '');
+    const fingerprintText = 'SHA256:' + base64String;
+    
+    const width = 17, height = 9;
+    const grid = Array(width * height).fill(0);
+    let fx = 8, fy = 4;
+    for (let i = 0; i < fingerprintBytes.length; i++) {
+        let b = fingerprintBytes[i];
+        for (let shift = 0; shift < 8; shift += 2) {
+            const dir = (b >> shift) & 3;
+            if ((dir & 1) === 0) fx = Math.max(0, fx - 1); else fx = Math.min(width - 1, fx + 1);
+            if ((dir & 2) === 0) fy = Math.max(0, fy - 1); else fy = Math.min(height - 1, fy + 1);
+            grid[fy * width + fx]++;
+        }
+    }
+    const chars = " .o+=*BOX@%&#/^";
+    let art = "+---[ECDSA 256]---+\n";
+    for (let row = 0; row < height; row++) {
+        art += "|";
+        for (let col = 0; col < width; col++) {
+            if (col === fx && row === fy) art += "E";
+            else if (col === 8 && row === 4) art += "S";
+            else art += chars[Math.min(grid[row * width + col], chars.length - 1)];
+        }
+        art += "|\n";
+    }
+    art += "+----[SHA256]-----+";
+    
+    const notices = document.querySelectorAll('.security-notice');
+    notices.forEach(notice => {
+        const svgIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-sm"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+        if (isFirstTrust) {
+            notice.innerHTML = `<strong>${svgIcon} First Trust:</strong> Server identity pinned. <span class="fingerprint-trigger">Fingerprint</span><div class="fingerprint-val-container"><span class="fingerprint-val fingerprint-block">${fingerprintText}</span></div><div class="randomart-container"><pre class="randomart">${art}</pre></div>This key is now saved in your browser (localStorage).`;
+        } else {
+            notice.innerHTML = `<strong>${svgIcon} Identity Verified:</strong> Device identity matched pinned key. <span class="fingerprint-trigger">Fingerprint</span><div class="fingerprint-val-container"><span class="fingerprint-val fingerprint-block">${fingerprintText}</span></div><div class="randomart-container"><pre class="randomart">${art}</pre></div>`;
+        }
+        notice.style.display = 'block';
+    });
 }
 
 // Derive AES-256-CBC ciphertext + HMAC-SHA256 blob from plaintext bytes.
