@@ -58,7 +58,7 @@ static esp_err_t handle_zk_root(httpd_req_t *req) {
   httpd_resp_set_hdr(
       req, "Content-Security-Policy",
       "default-src 'none'; "
-      "script-src 'sha256-/mCdobswGwEioCXvcGpbYF+0iyd+Se2qUggCTrvEPRk='; "
+      "script-src 'sha256-kEixpl88qlpp+XVsW7rm5Ajaaq/YUvviS1MtQBSGtqA='; "
       "style-src 'sha256-xxSFVVC2ZdqsOT4eVrW+anOuPfexGhhIkwxTKcE6vTA=' "
       "'unsafe-hashes' 'sha256-vdSyDjhE3ZMSkQMKmAlr9J2BmPtY//4BwPgxvF99yZE=' "
       "'sha256-pegjGrztx0uWMD32FGC/sYdh3DIgPvbATyZuieLPmow=' "
