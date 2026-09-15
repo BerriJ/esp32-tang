@@ -169,7 +169,8 @@ eFuse BLOCK_KEY4 via the TEE (SS 209).
 
 - **Curve**: NIST P-256 (secp256r1)
 - **Purpose**: signs the `/adv` JWS response (ES256) so clients can verify
-  authenticity of the advertised key set.
+  authenticity of the advertised key set, and signs the ECIES ephemeral tunnel
+  public key so the browser can authenticate the device (TOFU model).
 - **Lifetime**: permanent — survives reboots, lock/unlock cycles, and password
   changes. Generated once per device.
 - **Storage**: hardware-protected in eFuse,
@@ -283,7 +284,7 @@ change or rotation. They are read from flash per ECDH/rotate operation (no RAM
 cache) and zeroized from the stack immediately after use. The partition-level
 encryption (eFuse KEY3) protects them at rest.
 
-## ECIES Tunnel (Password Transport)
+## ECIES Tunnel (Authenticated Password Transport)
 
 Although the web UI is served over HTTPS, the ECIES tunnel provides an
 additional layer of **end-to-end encryption** for the password hash, independent
@@ -291,25 +292,56 @@ of the TLS certificate trust model (which uses a self-signed certificate). The
 web interface establishes an **ECIES** (Elliptic Curve Integrated Encryption
 Scheme) tunnel to the device:
 
-1. **Device** generates an ephemeral P-256 keypair and serves the public key
-   at `GET /api/identity`. The keypair is regenerated after every use (not just
-   at boot), so each operation gets a unique tunnel key.
-2. **Browser** generates its own ephemeral P-256 keypair and computes:
+1. **Device** generates an ephemeral P-256 keypair, **signs** the ephemeral
+   public key with the eFuse ECDSA signing key (KEY4), and serves the public
+   key, its signature, and the signing public key at `GET /api/identity`. The
+   keypair is regenerated after every use (not just at boot), so each operation
+   gets a unique tunnel key.
+2. **Browser** verifies the ECDSA signature on the ephemeral public key using
+   the device's signing key. On first connection, the signing key is pinned
+   in `)(**Trust-On-First-Use / TOFU**). On subsequent
+   connections, the browser verifies the signing key hasn't changed — a
+   mismatch aborts with a MITM warning.
+3. **Browser** generates its own ephemeral P-256 keypair and computes:
    ```
    shared_secret = ECDH(client_priv, device_pub)   // x-coordinate only
    enc_key = SHA-256("encryption"  || shared_secret)
    mac_key = SHA-256("authentication" || shared_secret)
    ```
-3. **Browser** encrypts the PBKDF2 hash:
+4. **Browser** encrypts the PBKDF2 hash:
    - AES-256-CBC with a random 16-byte IV, using `enc_key`
    - HMAC-SHA256 over `IV || ciphertext`, using `mac_key`
    - Blob = `IV(16) || Ciphertext(N) || HMAC(32)`
-4. **Browser** sends `{ clientPub: "hex", blob: "hex" }` to the device.
-5. **Device** (REE) performs the reverse ECDH + Encrypt-then-MAC verification
+5. **Browser** sends `{ clientPub: "hex", blob: "hex" }` to the device.
+6. **Device** (REE) performs the reverse ECDH + Encrypt-then-MAC verification
    to recover the 32-byte `password_hash`, passes it to the TEE, then
    immediately zeroizes it from REE memory.
-6. **Device** regenerates the ephemeral tunnel keypair so the old private key
+7. **Device** regenerates the ephemeral tunnel keypair so the old private key
    cannot be used to decrypt any future (or replayed) ECIES blobs.
+
+### Tunnel Authentication
+
+The ephemeral tunnel key is signed using the **hardware ECDSA peripheral** with
+the private key in eFuse KEY4. Since the eFuse key is hardware-protected and
+immutable, a network attacker (MITM) cannot forge a valid signature for a
+substitute ephemeral key. The browser verifies the signature (step 2) before
+performing ECDH, preventing key-substitution attacks.
+
+The signing public key is pinned client-side using a TOFU model: stored in
+`localStorage` on first connection, verified on subsequent connections within
+the same browser. This mirrors the SSH known-hosts model — the first
+connection establishes trust, and any key change triggers a warning.
+
+The `/api/identity` response format is:
+
+```json
+{
+  "pubKey":     "<ephemeral tunnel public key, uncompressed P-256, hex>",
+  "pubKeySig":  "<ECDSA-SHA256 signature of SHA-256(pubKey_bytes), r||s hex>",
+  "signingKey": "<eFuse signing public key, uncompressed P-256, hex>",
+  "salt":       "<eFuse UID, 128-bit PBKDF2 salt, hex>"
+}
+```
 
 ---
 
@@ -385,15 +417,15 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
 
 **HTTPS server (port 443)** — Web UI + ZK auth API (TLS required for Web Crypto secure context):
 
-| Endpoint               | Method | Description                                        |
-| ---------------------- | ------ | -------------------------------------------------- |
-| `/`                    | GET    | Embedded web UI (HTML/JS, Web Crypto API)          |
-| `/api/identity`        | GET    | Device tunnel public key + eFuse UID (PBKDF2 salt) |
-| `/api/status`          | GET    | Unlock/configuration status, gen counter, uptime   |
-| `/api/unlock`          | POST   | Submit ECIES-encrypted password hash               |
-| `/api/lock`            | POST   | Wipe TEE secrets, disable `/rec`                   |
-| `/api/change-password` | POST   | Change password (ECIES blob: old + new hash)       |
-| `/api/rotate`          | POST   | Rotate to next exchange key generation             |
+| Endpoint               | Method | Description                                           |
+| ---------------------- | ------ | ----------------------------------------------------- |
+| `/`                    | GET    | Embedded web UI (HTML/JS, Web Crypto API)             |
+| `/api/identity`        | GET    | Signed ephemeral tunnel key + signing key + eFuse UID |
+| `/api/status`          | GET    | Unlock/configuration status, gen counter, uptime      |
+| `/api/unlock`          | POST   | Submit ECIES-encrypted password hash                  |
+| `/api/lock`            | POST   | Wipe TEE secrets, disable `/rec`                      |
+| `/api/change-password` | POST   | Change password (ECIES blob: old + new hash)          |
+| `/api/rotate`          | POST   | Rotate to next exchange key generation                |
 
 ---
 
@@ -449,7 +481,9 @@ The signing key is **not** affected — the `/adv` JWK Thumbprint remains stable
   entirely inside the TEE — the REE only sees a pass/fail return code.
 - **Ephemeral tunnel keys** are regenerated after every use (not just at
   boot), providing per-operation forward secrecy for the password transport
-  channel. Capturing a blob is useless once the tunnel key has rotated.
+  channel. Capturing a blob is useless once the tunnel key has rotated. Each
+  ephemeral key is **signed by the eFuse ECDSA key** (KEY4) and verified
+  client-side via TOFU pinning, preventing MITM key substitution.
 - **Rate limiting** protects against brute-force password attempts. Failed
   attempts trigger exponential backoff (1 s → 2 s → 4 s → … → 5 min cap).
   Successful authentication resets the counter.

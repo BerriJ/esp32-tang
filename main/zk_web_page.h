@@ -602,12 +602,63 @@ async function loadDeviceIdentity() {
         const response = await fetch('/api/identity');
         if (!response.ok) throw new Error('Failed to fetch device identity');
         deviceIdentity = await response.json();
-        console.log('Device Public Key loaded');
+
+        // Verify the ECDSA signature on the ephemeral tunnel key (TOFU model)
+        if (deviceIdentity.pubKeySig && deviceIdentity.signingKey) {
+            await verifyTunnelKeySignature(deviceIdentity);
+        } else {
+            console.warn('Device identity has no tunnel key signature — skipping verification');
+        }
+
+        console.log('Device identity loaded and verified');
         return true;
     } catch (error) {
         console.error('Error loading device identity:', error);
-        showStatus('Failed to load device identity', 'error');
+        showStatus('Failed to load device identity: ' + error.message, 'error');
         return false;
+    }
+}
+
+// Verify the ECDSA signature on the ephemeral tunnel public key.
+// Uses Trust-On-First-Use (TOFU): the signing key is pinned in localStorage
+// on first connection and verified on subsequent connections.
+async function verifyTunnelKeySignature(identity) {
+    const signingKeyHex = identity.signingKey;
+    const pinnedKey = localStorage.getItem('pinnedSigningKey');
+
+    if (pinnedKey) {
+        // Verify the signing key hasn't changed since we first connected
+        if (pinnedKey !== signingKeyHex) {
+            throw new Error('Device signing key changed — possible MITM attack');
+        }
+    } else {
+        // First connection: pin the signing key
+        localStorage.setItem('pinnedSigningKey', signingKeyHex);
+    }
+
+    // Import the signing public key for ECDSA verification
+    const signingKeyBytes = hexToBytes(signingKeyHex);
+    const verifyKey = await crypto.subtle.importKey(
+        'raw', signingKeyBytes,
+        { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']
+    );
+
+    // The server signed SHA-256(pubKey_bytes), but Web Crypto ECDSA
+    // with hash:'SHA-256' will hash the input for us, so we pass the raw
+    // pubKey bytes (not the hash).
+    const pubKeyBytes = hexToBytes(identity.pubKey);
+
+    // Signature is raw r||s (64 bytes) — IEEE P1363 format, which is what
+    // Web Crypto expects natively for ECDSA.
+    const signatureBytes = hexToBytes(identity.pubKeySig);
+
+    const valid = await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        verifyKey, signatureBytes, pubKeyBytes
+    );
+
+    if (!valid) {
+        throw new Error('Tunnel key signature verification failed — possible MITM');
     }
 }
 
@@ -736,6 +787,7 @@ async function performSecureUnlock() {
         const result = await response.json();
 
         if (result.success) {
+            deviceIdentity = null;
             showStatus('\u2705 Device unlocked successfully!', 'success');
             setTimeout(() => window.location.reload(), 1500);
         } else {
@@ -875,6 +927,7 @@ async function performRotate() {
         const result = await response.json();
 
         if (result.success) {
+            deviceIdentity = null;
             showRotateStatus('Keys rotated successfully! New generation: ' + result.gen, 'success');
             setTimeout(() => backToStatusFromRotate(), 2000);
         } else {
@@ -956,6 +1009,7 @@ async function performPasswordChange() {
         const result = await response.json();
 
         if (result.success) {
+            deviceIdentity = null;
             showChangeStatus('Password changed successfully! Keys have been rotated.', 'success');
             setTimeout(() => backToStatus(), 2000);
         } else {

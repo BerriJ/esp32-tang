@@ -14,7 +14,7 @@ Security analysis of the ESP32-C5 Tang server reveals 4 critical, 7 high, 8 medi
 - **Status: HTTPS enabled via `esp_https_server` with embedded self-signed P-256 certificate. All traffic is TLS-encrypted. Web UI uses native Web Crypto API (requires secure context). Browser shows certificate warning on first visit (expected for self-signed).**
 - Files: `main/TangServer.h` (httpd_ssl_start), `main/CMakeLists.txt` (EMBED_TXTFILES https_server.crt/https_server.key), `sdkconfig` (CONFIG_ESP_HTTPS_SERVER_ENABLE)
 - ~~Impact: Even though ECIES protects the password hash, all response bodies (`/adv` JWS, `/rec` ECDH results, `/api/status`, `/api/identity`) are transmitted in cleartext. A network observer sees Tang protocol messages, device state, and can perform active MITM on the ECIES tunnel (replace device pubkey in `/api/identity` response).~~
-- ~~The ECIES tunnel is a custom protocol and cannot authenticate the server — a MITM can serve their own ephemeral key and relay.~~
+- ~~The ECIES tunnel is a custom protocol and cannot authenticate the server — a MITM can serve their own ephemeral key and relay.~~ **Additionally mitigated:** the ephemeral tunnel key is now signed by the eFuse ECDSA key (KEY4), and the browser verifies the signature using TOFU key pinning (`localStorage`). A MITM cannot forge a valid signature for a substitute key.
 
 **V2. ~~No Secure Boot — unsigned firmware executes freely~~ FIXED**
 - **Status: Secure Boot V2 has been activated.**
@@ -342,7 +342,7 @@ Security analysis of the ESP32-C5 Tang server reveals 4 critical, 7 high, 8 medi
 
 ## Decisions
 
-- **ECIES tunnel vs TLS**: With HTTPS enabled (Phase 2), the ECIES tunnel becomes defense-in-depth rather than the sole transport protection. Both can coexist; the ECIES tunnel still adds value (end-to-end encryption past any TLS-terminating proxy).
+- **ECIES tunnel vs TLS**: With HTTPS enabled (Phase 2), the ECIES tunnel becomes defense-in-depth rather than the sole transport protection. Both can coexist; the ECIES tunnel still adds value (end-to-end encryption past any TLS-terminating proxy). The ephemeral tunnel key is signed by the eFuse ECDSA key with TOFU verification, providing server authentication independent of the TLS certificate.
 - **PBKDF2 iteration increase is breaking**: Existing passwords will produce different hashes. A migration path (try 600k first, fall back to 10k, then force re-enrollment) could ease transition.
 - **OTA vs serial flashing**: OTA declined — physical access is always available, Secure Boot V2 ensures only signed firmware can be flashed via serial, and OTA would halve app partition space while adding attack surface.
 

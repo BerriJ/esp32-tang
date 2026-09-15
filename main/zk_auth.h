@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include <mbedtls/platform_util.h>
 #include <psa/crypto.h>
+#include "psa_crypto_driver_esp_ecdsa.h"
 #include <string.h>
 
 // Zero-Knowledge Authentication Module
@@ -102,6 +103,45 @@ private:
       if (sscanf(hex + (i * 2), "%2hhx", &bin[i]) != 1)
         return false;
     }
+    return true;
+  }
+
+  // Sign the ephemeral tunnel public key with the eFuse ECDSA key (KEY4).
+  // Returns true on success and fills sig_out (64 bytes: r(32) || s(32)).
+  bool sign_tunnel_key(uint8_t *sig_out) {
+    // Hash the ephemeral public key
+    uint8_t hash[32];
+    size_t hash_len;
+    psa_status_t psa_ret = psa_hash_compute(
+        PSA_ALG_SHA_256, device_public_key, sizeof(device_public_key),
+        hash, sizeof(hash), &hash_len);
+    if (psa_ret != PSA_SUCCESS) {
+      ESP_LOGE(TAG_ZK_AUTH, "SHA-256 of tunnel key failed: %d", (int)psa_ret);
+      return false;
+    }
+
+    // Sign with eFuse BLOCK_KEY4 via PSA Crypto Opaque Driver
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attributes,
+                     PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attributes, 256);
+
+    esp_ecdsa_opaque_key_t opaque_key = {};
+    opaque_key.curve = ESP_ECDSA_CURVE_SECP256R1;
+    opaque_key.efuse_block = 8;
+
+    size_t sig_len = 0;
+    psa_ret = esp_ecdsa_opaque_sign_hash(
+        &attributes, (const uint8_t *)&opaque_key, sizeof(opaque_key),
+        PSA_ALG_ECDSA(PSA_ALG_SHA_256), hash, sizeof(hash),
+        sig_out, 64, &sig_len);
+
+    if (psa_ret != PSA_SUCCESS || sig_len != 64) {
+      ESP_LOGE(TAG_ZK_AUTH, "ECDSA tunnel key signing failed: %d",
+               (int)psa_ret);
+      return false;
+    }
+
     return true;
   }
 
@@ -357,8 +397,8 @@ public:
     return true;
   }
 
-  // Return ephemeral tunnel public key + eFuse UID (PBKDF2 salt) for the
-  // browser
+  // Return ephemeral tunnel public key, its ECDSA signature, the signing
+  // public key, and the eFuse UID (PBKDF2 salt) for the browser.
   char *get_identity_json() {
     char pubkey_hex[131]; // 65 bytes * 2 + null
     bin_to_hex(device_public_key, 65, pubkey_hex);
@@ -371,6 +411,27 @@ public:
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "pubKey", pubkey_hex);
     cJSON_AddStringToObject(root, "salt", uid_hex);
+
+    // Sign the ephemeral tunnel key with the eFuse ECDSA key
+    uint8_t sig[64];
+    if (sign_tunnel_key(sig)) {
+      char sig_hex[129]; // 64 bytes * 2 + null
+      bin_to_hex(sig, 64, sig_hex);
+      cJSON_AddStringToObject(root, "pubKeySig", sig_hex);
+
+      // Include the signing public key (0x04 || X(32) || Y(32))
+      if (keystore.sig_loaded) {
+        uint8_t sig_pub_uncompressed[65];
+        sig_pub_uncompressed[0] = 0x04;
+        memcpy(sig_pub_uncompressed + 1, keystore.sig_pub, 64);
+        char sig_pub_hex[131];
+        bin_to_hex(sig_pub_uncompressed, 65, sig_pub_hex);
+        cJSON_AddStringToObject(root, "signingKey", sig_pub_hex);
+      }
+    } else {
+      ESP_LOGW(TAG_ZK_AUTH,
+               "Failed to sign tunnel key — identity served without signature");
+    }
 
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
